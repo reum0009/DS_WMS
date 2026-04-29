@@ -1,0 +1,11 @@
+productCode,productName,category,unit,unitPrice,currentStock,safetyStock,warehouseId,description
+P001,A4용지(500매),office,다리,5000,500,200,,고품질사무용
+P002,모니터(24인치),equipment,개,300000,25,10,1,24인치 LED모니터
+P003,책상(1800mm),office,개,150000,15,5,,목재책상
+P004,의자(회전),office,개,75000,30,10,,곡목재회전의자
+P005,파일캐비넷,facility,개,200000,8,3,,4단 금속캐비넷
+P006,프린터,equipment,대,450000,5,2,1,복합기프린터
+P007,카펫(10m²),facility,장,95000,20,8,,방음카펫
+P008,부스터설치,site,식,15000,100,50,,우회로봇설치재료
+F001,고정자산1,fixed,개,500000,2,1,,사무기기
+F002,고정자산2,fixed,대,800000,1,1,,대형장비
