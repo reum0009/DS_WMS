@@ -1,0 +1,239 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <title>Warehouse POS — 개발자 도구</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body { background: #0d1117; color: #e6edf3; font-family: system-ui, sans-serif; padding: 32px; }
+    h1 { font-size: 20px; color: #58a6ff; margin-bottom: 4px; }
+    .sub { font-size: 13px; color: #8b949e; margin-bottom: 32px; }
+
+    .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+
+    .card { background: #161b22; border: 1px solid #30363d; border-radius: 10px; padding: 24px; }
+    .card h2 { font-size: 14px; color: #e6edf3; margin-bottom: 16px; font-weight: 600; }
+
+    label { font-size: 12px; color: #8b949e; display: block; margin-bottom: 4px; }
+    input[type=text] {
+      width: 100%; padding: 8px 12px; background: #0d1117;
+      border: 1px solid #30363d; border-radius: 6px; color: #e6edf3; font-size: 13px;
+    }
+    input[type=text]:focus { outline: none; border-color: #58a6ff; }
+
+    .row { margin-bottom: 14px; }
+    .check-row { display: flex; align-items: center; gap: 8px; font-size: 13px; color: #8b949e; margin-bottom: 14px; }
+    .check-row input { width: 14px; height: 14px; accent-color: #58a6ff; }
+
+    .btn { padding: 9px 20px; border-radius: 6px; border: none; cursor: pointer; font-size: 13px; font-weight: 600; }
+    .btn-primary  { background: #238636; color: #fff; }
+    .btn-secondary{ background: #21262d; color: #e6edf3; border: 1px solid #30363d; }
+    .btn-down     { background: #1f6feb; color: #fff; }
+    .btn:disabled { background: #21262d; color: #484f58; cursor: not-allowed; }
+    .btn-row { display: flex; gap: 8px; flex-wrap: wrap; }
+
+    .log-box {
+      background: #0d1117; border: 1px solid #21262d; border-radius: 6px;
+      padding: 14px; font-family: monospace; font-size: 12px;
+      height: 320px; overflow-y: auto; margin-top: 12px;
+      white-space: pre-wrap; word-break: break-all;
+    }
+    .log-start { color: #58a6ff; font-weight: bold; }
+    .log-done  { color: #3fb950; }
+    .log-warn  { color: #e3b341; }
+    .log-error { color: #f85149; }
+    .log-info  { color: #d2a8ff; }
+    .log-build { color: #ffa657; }
+    .log-default { color: #8b949e; }
+
+    .badge { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 600; }
+    .badge-green  { background: #1a4a1e; color: #3fb950; }
+    .badge-blue   { background: #1a2e4a; color: #58a6ff; }
+
+    table { width: 100%; border-collapse: collapse; font-size: 12px; margin-top: 8px; }
+    th { padding: 6px 8px; text-align: left; color: #8b949e; border-bottom: 1px solid #21262d; font-weight: 500; }
+    td { padding: 7px 8px; border-bottom: 1px solid #161b22; color: #e6edf3; }
+    tr:hover td { background: #1c2128; }
+
+    .version-display { font-size: 28px; font-weight: 700; color: #58a6ff; }
+    .version-date { font-size: 12px; color: #8b949e; margin-top: 2px; }
+    .divider { height: 1px; background: #21262d; margin: 16px 0; }
+
+    .status-dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; margin-right: 6px; }
+    .dot-green { background: #3fb950; }
+    .dot-yellow { background: #e3b341; }
+  </style>
+</head>
+<body>
+  <h1>⚙ Warehouse POS 개발자 도구</h1>
+  <p class="sub">릴리즈 생성 및 버전 관리 — APP_MODE=developer</p>
+
+  <div class="grid">
+
+    <!-- 왼쪽: 릴리즈 생성 -->
+    <div>
+      <div class="card">
+        <h2>현재 버전</h2>
+        <div class="version-display" id="curVersion">로딩 중...</div>
+        <div class="version-date" id="curDate"></div>
+        <div class="divider"></div>
+        <h2>릴리즈 생성</h2>
+
+        <div class="row">
+          <label>새 버전 번호</label>
+          <input type="text" id="newVersion" placeholder="예: 1.0.1" />
+        </div>
+
+        <div class="check-row">
+          <input type="checkbox" id="buildFrontend" checked />
+          <label style="margin:0">프론트엔드 빌드 포함 (npm run build)</label>
+        </div>
+
+        <div class="btn-row">
+          <button class="btn btn-primary" id="btnBuild" onclick="startBuild()">빌드 시작</button>
+          <button class="btn btn-secondary" onclick="clearLog()">로그 지우기</button>
+        </div>
+      </div>
+
+      <!-- 다운로드 -->
+      <div class="card" style="margin-top:16px">
+        <h2>릴리즈 다운로드</h2>
+        <div id="noFile" style="font-size:13px;color:#8b949e">아직 생성된 릴리즈가 없습니다.</div>
+        <div class="btn-row" id="downloadArea" style="display:none">
+          <button class="btn btn-down" id="btnDownload" onclick="downloadZip()">zip 다운로드</button>
+          <span id="zipInfo" style="font-size:12px;color:#8b949e;align-self:center"></span>
+        </div>
+      </div>
+    </div>
+
+    <!-- 오른쪽: 진행 상황 + 릴리즈 목록 -->
+    <div>
+      <div class="card">
+        <h2>빌드 진행 상황</h2>
+        <div class="log-box" id="logBox">대기 중...</div>
+      </div>
+
+      <div class="card" style="margin-top:16px">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+          <h2 style="margin:0">릴리즈 목록</h2>
+          <button class="btn btn-secondary" style="padding:4px 12px;font-size:12px" onclick="loadList()">새로고침</button>
+        </div>
+        <table>
+          <thead><tr><th>파일명</th><th>크기</th><th>날짜</th><th></th></tr></thead>
+          <tbody id="releaseList"><tr><td colspan="4" style="color:#8b949e">없음</td></tr></tbody>
+        </table>
+      </div>
+    </div>
+
+  </div>
+
+  <script>
+    let currentZip = null;
+    let evtSource  = null;
+
+    async function loadInfo() {
+      try {
+        const r = await fetch('/api/release/info');
+        const d = await r.json();
+        document.getElementById('curVersion').textContent = 'v' + d.version.version;
+        document.getElementById('curDate').textContent    = d.version.buildDate || '';
+        const next = bumpVersion(d.version.version);
+        document.getElementById('newVersion').value = next;
+      } catch {}
+    }
+
+    function bumpVersion(v) {
+      const parts = (v || '1.0.0').split('.').map(Number);
+      parts[2] = (parts[2] || 0) + 1;
+      return parts.join('.');
+    }
+
+    async function loadList() {
+      try {
+        const r = await fetch('/api/release/list');
+        const list = await r.json();
+        const tbody = document.getElementById('releaseList');
+        if (!list.length) {
+          tbody.innerHTML = '<tr><td colspan="4" style="color:#8b949e">없음</td></tr>';
+          return;
+        }
+        tbody.innerHTML = list.map(f => `
+          <tr>
+            <td style="font-family:monospace">${f.name}</td>
+            <td>${f.size}</td>
+            <td style="color:#8b949e">${new Date(f.date).toLocaleDateString('ko-KR')}</td>
+            <td><button class="btn btn-secondary" style="padding:3px 10px;font-size:11px"
+              onclick="downloadFile('${f.name}')">다운로드</button></td>
+          </tr>`).join('');
+      } catch {}
+    }
+
+    function log(msg, type = 'default') {
+      const box = document.getElementById('logBox');
+      const div = document.createElement('div');
+      div.className = 'log-' + type;
+      div.textContent = msg;
+      box.appendChild(div);
+      box.scrollTop = box.scrollHeight;
+    }
+
+    function clearLog() {
+      document.getElementById('logBox').innerHTML = '';
+    }
+
+    function startBuild() {
+      const version = document.getElementById('newVersion').value.trim();
+      if (!version) { alert('버전 번호를 입력하세요.'); return; }
+
+      clearLog();
+      document.getElementById('btnBuild').disabled = true;
+      currentZip = null;
+      document.getElementById('downloadArea').style.display = 'none';
+      document.getElementById('noFile').style.display = 'block';
+
+      // SSE 연결
+      if (evtSource) evtSource.close();
+      evtSource = new EventSource('/api/release/progress');
+      evtSource.onmessage = e => {
+        const d = JSON.parse(e.data);
+        if (d.msg.startsWith('DONE:')) {
+          evtSource.close();
+          document.getElementById('btnBuild').disabled = false;
+          const zipName = d.msg.slice(5);
+          if (zipName && zipName !== 'error' && zipName !== 'none') {
+            currentZip = zipName;
+            document.getElementById('zipInfo').textContent = zipName;
+            document.getElementById('downloadArea').style.display = 'flex';
+            document.getElementById('noFile').style.display = 'none';
+            loadList();
+            loadInfo();
+          }
+          return;
+        }
+        log(`[${d.time}] ${d.msg}`, d.type || 'default');
+      };
+
+      fetch('/api/release/build', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          version,
+          buildFrontend: document.getElementById('buildFrontend').checked
+        })
+      });
+    }
+
+    function downloadZip() {
+      if (currentZip) downloadFile(currentZip);
+    }
+
+    function downloadFile(name) {
+      window.location.href = `/api/release/download/${name}`;
+    }
+
+    // 초기 로드
+    loadInfo();
+    loadList();
+  </script>
+</body>
+</html>

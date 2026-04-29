@@ -1,0 +1,78 @@
+/* ═══════════════════════════════════════════════════════════════════
+   WMS 입고 처리 화면 — 24인치 터치 모니터 최적화 (16:9)
+═══════════════════════════════════════════════════════════════════ */
+
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+.inb-root {
+  display: flex;
+  flex-direction: column;
+  width: 100vw;
+  height: 100vh;
+  background: #0d1117;
+  color: #e2e8f0;
+  font-family: 'Inter', 'Noto Sans KR', sans-serif;
+  font-size: 18px; /* 기본 폰트 확대 */
+  overflow: hidden;
+  user-select: none;
+}
+
+/* ═══ TOP BAR (80px) ════════════════════════════════════════════════ */
+.inb-top {
+  display: flex;
+  align-items: center;
+  height: 80px;
+  flex-shrink: 0;
+  background: #161b22;
+  border-bottom: 4px solid #3fb950;
+  padding: 0 24px;
+}
+
+.inb-top__title { font-size: 1.6rem; font-weight: 800; color: #3fb950; }
+.inb-top__warehouse { font-size: 1.3rem; font-weight: 700; color: #58a6ff; margin-left: 20px; }
+
+.inb-top__center { flex: 1; display: flex; justify-content: center; }
+.inb-top__ref { padding: 8px 20px; border-radius: 10px; background: #21262d; border: 2px solid #30363d; }
+.inb-top__ref-val { font-size: 1.2rem; color: #3fb950; font-weight: 800; font-family: monospace; }
+
+.inb-top__time { font-size: 1.3rem; color: #8b949e; font-weight: 600; margin-right: 20px; }
+
+/* ═══ LEFT PANEL (380px) ════════════════════════════════════════════ */
+.inb-left { width: 380px; border-right: 2px solid #21262d; background: #0d1117; }
+.inb-left__title { padding: 20px; font-size: 1.3rem; background: #161b22; border-bottom: 2px solid #21262d; }
+
+.inb-session-item { padding: 16px 20px; border-radius: 12px; margin-bottom: 8px; border: 2px solid #21262d; }
+.inb-si-name { font-size: 1.3rem; margin-bottom: 8px; }
+.inb-si-qty { font-size: 1.5rem; color: #3fb950; font-weight: 900; }
+
+.inb-complete-btn { height: 74px; font-size: 1.5rem; font-weight: 800; border-radius: 15px; margin-top: 10px; }
+
+/* ═══ CENTER PANEL ══════════════════════════════════════════════════ */
+.inb-center { flex: 1; padding: 30px; gap: 24px; }
+
+.inb-barcode-input { height: 70px; font-size: 1.8rem; border-radius: 12px; padding: 0 24px; }
+.inb-scan-btn { height: 70px; font-size: 1.4rem; padding: 0 30px; border-radius: 12px; }
+
+.inb-product-card { padding: 24px; border-radius: 20px; border-width: 3px; }
+.inb-pc-name { font-size: 2.2rem; }
+
+.inb-pc-field { padding: 12px 18px; border-radius: 10px; }
+.inb-pc-field__lbl { font-size: 1rem; }
+.inb-pc-field__val { font-size: 1.3rem; }
+
+/* 수량 입력 대형화 */
+.inb-qty-input { width: 180px; height: 84px; font-size: 3rem; border-radius: 12px; border-width: 3px; }
+.inb-qty-unit { font-size: 1.5rem; }
+
+/* 넘버패드 대형화 */
+.inb-numpad__key { width: 90px; height: 84px; font-size: 1.8rem; border-radius: 12px; border-width: 2px; }
+
+/* ═══ DIALOG ════════════════════════════════════════════════════════ */
+.inb-dialog { width: 640px; border-radius: 24px; border-width: 3px; }
+.inb-dialog__title { padding: 24px 30px; font-size: 1.6rem; }
+.inb-dialog__body { padding: 30px; gap: 20px; }
+.inb-dialog__stats { font-size: 1.8rem; padding: 20px; }
+.inb-dialog__btn { height: 70px; font-size: 1.4rem; border-radius: 15px; }
+
+/* ═══ TOAST ═════════════════════════════════════════════════════════ */
+.inb-toast { top: 100px; padding: 18px 40px; font-size: 1.4rem; border-radius: 50px; border-width: 3px; }
