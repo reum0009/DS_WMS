@@ -153,9 +153,11 @@ const categoriesAPI = {
   moveAfter:       (id, afterId)    => axios.put(`${API_BASE_URL}/categories/${id}/move-after`, { afterId }, { headers: getAuthHeader() }),
   restore:         (id)      => axios.put(`${API_BASE_URL}/categories/${id}/restore`, {}, { headers: getAuthHeader() }),
   deletePermanent: (id)      => axios.delete(`${API_BASE_URL}/categories/${id}/permanent`, { headers: getAuthHeader() }),
-  getDeptFields:   (deptId)  => axios.get(`${API_BASE_URL}/categories/dept-fields/${deptId}`, { headers: getAuthHeader() }),
-  createField:     (data)    => axios.post(`${API_BASE_URL}/categories/dept-fields`, data, { headers: getAuthHeader() }),
-  deleteField:     (id)      => axios.delete(`${API_BASE_URL}/categories/dept-fields/${id}`, { headers: getAuthHeader() }),
+  getDeptFields:         (deptId)  => axios.get(`${API_BASE_URL}/categories/dept-fields/${deptId}`, { headers: getAuthHeader() }),
+  createField:           (data)    => axios.post(`${API_BASE_URL}/categories/dept-fields`, data, { headers: getAuthHeader() }),
+  deleteField:           (id)      => axios.delete(`${API_BASE_URL}/categories/dept-fields/${id}`, { headers: getAuthHeader() }),
+  getWarehouseStocks:    (id)      => axios.get(`${API_BASE_URL}/categories/${id}/warehouse-stocks`, { headers: getAuthHeader() }),
+  setWarehouseStocks:    (id, data)=> axios.put(`${API_BASE_URL}/categories/${id}/warehouse-stocks`, data, { headers: getAuthHeader() }),
 };
 
 const suppliersAPI = {
@@ -192,6 +194,12 @@ const gwMappingAPI = {
   syncItems: () => axios.post(`${API_BASE_URL}/gw-mapping/sync`, {}, { headers: getAuthHeader() }),
 };
 
+const dbConfigAPI = {
+  get: () => axios.get(`${API_BASE_URL}/system/db-config`, { headers: getAuthHeader() }),
+  test: (data) => axios.post(`${API_BASE_URL}/system/db-config/test`, data, { headers: getAuthHeader() }),
+  save: (data) => axios.put(`${API_BASE_URL}/system/db-config`, data, { headers: getAuthHeader() }),
+};
+
 export {
   dashboardAPI,
   authAPI,
@@ -212,6 +220,7 @@ export {
   warehouseTransferAPI,
   productsQuickAdd,
   gwMappingAPI,
+  dbConfigAPI,
   gwRequestsAPI
 };
 
@@ -235,6 +244,7 @@ const api = {
   warehouseTransferAPI,
   productsQuickAdd,
   gwMappingAPI,
+  dbConfigAPI,
   gwRequestsAPI
 };
 

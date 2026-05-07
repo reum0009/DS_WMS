@@ -24,7 +24,47 @@ function parseWarehouseScope(req) {
   return null;
 }
 
-function applyWarehouseScopeToProduct(product, warehouseId) {
+function categorySafetyFromMap(categoryMap, categoryId) {
+  if (!categoryMap || !categoryId) return 0;
+  const row = categoryMap.get(parseInt(categoryId, 10));
+  return Math.max(0, parseInt(row?.safetyStock, 10) || 0);
+}
+
+function getWarehouseSafety(categoryWhStockMap, categoryId, warehouseId, defaultSafety) {
+  if (!categoryWhStockMap || !categoryId || !warehouseId) return defaultSafety;
+  const catId = parseInt(categoryId, 10);
+  const whId = parseInt(warehouseId, 10);
+  const whMap = categoryWhStockMap.get(catId);
+  if (!whMap) return defaultSafety;
+  const val = whMap.get(whId);
+  return val !== undefined ? val : defaultSafety;
+}
+
+function applyCategorySafetyToProduct(product, categoryMap, categoryWhStockMap = null) {
+  const p = product.toJSON ? product.toJSON() : { ...product };
+  const catSafety = categorySafetyFromMap(categoryMap, p.categoryId);
+  const productSafety = parseInt(p.safetyStock, 10) || 0;
+  // 창고별 카테고리 안전재고가 있으면 최대값을 카테고리 기준으로 사용
+  let catWhMax = 0;
+  if (categoryWhStockMap && p.categoryId) {
+    const whMap = categoryWhStockMap.get(parseInt(p.categoryId, 10));
+    if (whMap && whMap.size > 0) catWhMax = Math.max(0, ...Array.from(whMap.values()));
+  }
+  const effectiveCatSafety = catSafety > 0 ? catSafety : catWhMax;
+  // 우선순위: 카테고리값 > 창고별최대값 > 품목자체값
+  const defaultSafety = effectiveCatSafety > 0 ? effectiveCatSafety : productSafety;
+  p.categorySafetyStock = effectiveCatSafety;
+  p.safetyStock = defaultSafety;
+  if (Array.isArray(p.warehouseStocks)) {
+    p.warehouseStocks = p.warehouseStocks.map(ws => {
+      const whSafety = getWarehouseSafety(categoryWhStockMap, p.categoryId, ws.warehouseId, defaultSafety);
+      return { ...ws, categorySafetyStock: whSafety, safetyStock: whSafety };
+    });
+  }
+  return p;
+}
+
+function applyWarehouseScopeToProduct(product, warehouseId, categoryMap = null, categoryWhStockMap = null) {
   if (!warehouseId) return product;
   const p = product.toJSON ? product.toJSON() : { ...product };
   const stocks = Array.isArray(p.warehouseStocks) ? p.warehouseStocks : [];
@@ -36,7 +76,18 @@ function applyWarehouseScopeToProduct(product, warehouseId) {
     scopedCurrent = parseInt(p.currentStock, 10) || 0;
   }
   p.currentStock = scopedCurrent;
-  p.safetyStock = parseInt(row.safetyStock, 10) || 0;
+  const catSafety = categorySafetyFromMap(categoryMap, p.categoryId);
+  const productSafety = parseInt(p.safetyStock, 10) || 0;
+  let catWhMax = 0;
+  if (categoryWhStockMap && p.categoryId) {
+    const whMap = categoryWhStockMap.get(parseInt(p.categoryId, 10));
+    if (whMap && whMap.size > 0) catWhMax = Math.max(0, ...Array.from(whMap.values()));
+  }
+  const effectiveCatSafety = catSafety > 0 ? catSafety : catWhMax;
+  const baseSafety = effectiveCatSafety > 0 ? effectiveCatSafety : productSafety;
+  const whSafety = getWarehouseSafety(categoryWhStockMap, p.categoryId, warehouseId, baseSafety);
+  p.categorySafetyStock = effectiveCatSafety;
+  p.safetyStock = whSafety;
   p.warehouseId = parseInt(warehouseId, 10);
   return p;
 }
@@ -216,7 +267,7 @@ router.post('/check-duplicate', auth, async (req, res) => {
 // GET /api/products              → 활성 목록 (기본)
 router.get('/', auth, async (req, res) => {
   try {
-    const { Product, ItemCode, Supplier, ProductWarehouseStock, Warehouse } = global.sequelize.models;
+    const { Product, ItemCode, Supplier, ProductWarehouseStock, Warehouse, Category } = global.sequelize.models;
     const warehouseScopeId = parseWarehouseScope(req);
     const isActive = req.query.inactive === '1' ? false : true;
     const products = await Product.findAll({
@@ -235,9 +286,21 @@ router.get('/', auth, async (req, res) => {
       ],
       order: [['productCode', 'ASC']],
     });
-    if (!warehouseScopeId) return res.json(products);
+    const { CategoryWarehouseStock } = global.sequelize.models;
+    const [categories, cwsRows] = await Promise.all([
+      Category.findAll({ attributes: ['id', 'safetyStock'] }),
+      CategoryWarehouseStock.findAll({ attributes: ['categoryId', 'warehouseId', 'safetyStock'] }),
+    ]);
+    const categoryMap = new Map(categories.map(c => [parseInt(c.id, 10), c]));
+    const categoryWhStockMap = new Map();
+    for (const r of cwsRows) {
+      const catId = parseInt(r.categoryId, 10);
+      if (!categoryWhStockMap.has(catId)) categoryWhStockMap.set(catId, new Map());
+      categoryWhStockMap.get(catId).set(parseInt(r.warehouseId, 10), parseInt(r.safetyStock, 10) || 0);
+    }
+    if (!warehouseScopeId) return res.json(products.map(p => applyCategorySafetyToProduct(p, categoryMap, categoryWhStockMap)));
     const scoped = products
-      .map(p => applyWarehouseScopeToProduct(p, warehouseScopeId))
+      .map(p => applyWarehouseScopeToProduct(p, warehouseScopeId, categoryMap, categoryWhStockMap))
       .filter(Boolean);
     res.json(scoped);
   } catch (err) {
@@ -249,7 +312,7 @@ router.get('/', auth, async (req, res) => {
 // GET /api/products/:id
 router.get('/:id', auth, async (req, res) => {
   try {
-    const { Product, ItemCode, Supplier, ProductWarehouseStock, Warehouse } = global.sequelize.models;
+    const { Product, ItemCode, Supplier, ProductWarehouseStock, Warehouse, Category, CategoryWarehouseStock } = global.sequelize.models;
     const warehouseScopeId = parseWarehouseScope(req);
     const product = await Product.findByPk(req.params.id, {
       include: [{ model: ItemCode, as: 'codes', required: false,
@@ -262,8 +325,19 @@ router.get('/:id', auth, async (req, res) => {
       }],
     });
     if (!product) return res.status(404).json({ error: '품목을 찾을 수 없습니다' });
-    if (!warehouseScopeId) return res.json(product);
-    const scoped = applyWarehouseScopeToProduct(product, warehouseScopeId);
+    const [categories, cwsRows] = await Promise.all([
+      Category.findAll({ attributes: ['id', 'safetyStock'] }),
+      CategoryWarehouseStock.findAll({ attributes: ['categoryId', 'warehouseId', 'safetyStock'] }),
+    ]);
+    const categoryMap = new Map(categories.map(c => [parseInt(c.id, 10), c]));
+    const categoryWhStockMap = new Map();
+    for (const r of cwsRows) {
+      const catId = parseInt(r.categoryId, 10);
+      if (!categoryWhStockMap.has(catId)) categoryWhStockMap.set(catId, new Map());
+      categoryWhStockMap.get(catId).set(parseInt(r.warehouseId, 10), parseInt(r.safetyStock, 10) || 0);
+    }
+    if (!warehouseScopeId) return res.json(applyCategorySafetyToProduct(product, categoryMap, categoryWhStockMap));
+    const scoped = applyWarehouseScopeToProduct(product, warehouseScopeId, categoryMap, categoryWhStockMap);
     if (!scoped) return res.status(404).json({ error: '해당 창고에 배정되지 않은 품목입니다.' });
     res.json(scoped);
   } catch (err) {
@@ -295,9 +369,6 @@ router.post('/', auth, roleAuth(['admin', 'dept_admin']), async (req, res) => {
     if (parsedUnitPrice.error) return res.status(400).json({ error: parsedUnitPrice.error });
 
     const normalizedWarehouseStocks = normalizeWarehouseStocks(warehouseStocks);
-    if (!normalizedWarehouseStocks.length && (safetyStock === undefined || safetyStock === null || safetyStock === '')) {
-      return res.status(400).json({ error: '안전재고 수량은 필수 입력 항목입니다.' });
-    }
 
     // ── 바코드/코드 중복 체크 추가 ──
     if (codes.length > 0) {
@@ -342,9 +413,8 @@ router.post('/', auth, roleAuth(['admin', 'dept_admin']), async (req, res) => {
     }
 
     const productCode = await nextItemCode();
-    const effectiveSafetyStock = normalizedWarehouseStocks.length
-      ? normalizedWarehouseStocks.reduce((sum, w) => sum + (w.safetyStock || 0), 0)
-      : parseInt(safetyStock, 10);
+    const category = categoryId ? await Category.findByPk(parseInt(categoryId, 10), { transaction: t }) : null;
+    const effectiveSafetyStock = Math.max(0, parseInt(category?.safetyStock, 10) || 0);
 
     if (normalizedWarehouseStocks.length) {
       await validateWarehouseStocksByDept({
@@ -452,10 +522,6 @@ router.put('/:id', auth, roleAuth(['admin', 'dept_admin']), async (req, res) => 
 
     const hasWarehouseStocksField = Array.isArray(warehouseStocks);
     const normalizedWarehouseStocks = hasWarehouseStocksField ? normalizeWarehouseStocks(warehouseStocks) : [];
-    if (hasWarehouseStocksField && !normalizedWarehouseStocks.length && (safetyStock === undefined || safetyStock === null || safetyStock === '')) {
-      await t.rollback();
-      return res.status(400).json({ error: '안전재고 수량은 필수 입력 항목입니다.' });
-    }
 
     if (normalizedWarehouseStocks.length) {
       await validateWarehouseStocksByDept({
@@ -473,14 +539,10 @@ router.put('/:id', auth, roleAuth(['admin', 'dept_admin']), async (req, res) => 
     if (unit            !== undefined) updates.unit            = unit;
     if (unitPrice       !== undefined) updates.unitPrice       = parsedUnitPrice.value;
     if (currentStock    !== undefined) updates.currentStock    = Math.max(0, parseInt(currentStock, 10) || 0);
-    if (normalizedWarehouseStocks.length) {
-      updates.safetyStock = normalizedWarehouseStocks.reduce((sum, w) => sum + (w.safetyStock || 0), 0);
-      updates.safetyStockMode = 'manual';
-      updates.manualSafetyStock = updates.safetyStock;
-    } else if (safetyStock !== undefined) {
-      updates.safetyStock = safetyStock;
-      updates.safetyStockMode = 'manual';
-      updates.manualSafetyStock = parseInt(safetyStock, 10) || 0;
+    // 카테고리 기반 안전재고: categoryId가 변경될 때 새 카테고리 값으로 동기화
+    if (updates.categoryId !== undefined) {
+      const newCat = updates.categoryId ? await Category.findByPk(parseInt(updates.categoryId, 10), { transaction: t }) : null;
+      updates.safetyStock = Math.max(0, parseInt(newCat?.safetyStock, 10) || 0);
     }
     if (warehouseId     !== undefined) updates.warehouseId     = warehouseId || null;
     if (notes           !== undefined) updates.notes           = notes;
