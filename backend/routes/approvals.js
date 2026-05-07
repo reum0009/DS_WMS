@@ -14,7 +14,7 @@ router.get('/pending', auth, roleAuth(['approver', 'admin']), async (req, res) =
         {
           model: RequestItem,
           as: 'items',
-          include: [{ model: Product, attributes: ['productCode', 'productName', 'currentStock', 'unit'] }]
+          include: [{ model: Product, attributes: ['productCode', 'productName', 'specification', 'currentStock', 'unit'] }]
         }
       ]
     });

@@ -38,7 +38,25 @@
       "Bash(curl -s -X POST http://localhost:5000/api/invitations -H 'Content-Type: application/json' -H 'Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpZCI6MSwicm9sZSI6ImFkbWluIiwiaWF0IjoxNzc2MzgxMDI3fQ.VYRq4GEH2nBzZhAssiW3NjWaM08aDOzrqgNI68ccKBo' -d '{\"email\":\"test_invite@example.com\",\"role\":\"warehouse\"}')",
       "Bash(curl -s http://localhost:5000/api/invitations -H 'Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpZCI6MSwicm9sZSI6ImFkbWluIiwiaWF0IjoxNzc2MzgxMDI3fQ.VYRq4GEH2nBzZhAssiW3NjWaM08aDOzrqgNI68ccKBo')",
       "Bash(curl -s -X POST http://localhost:5000/api/invitations -H 'Content-Type: application/json' -H 'Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpZCI6MSwicm9sZSI6ImFkbWluIiwiaWF0IjoxNzc2MzgxMDI3fQ.VYRq4GEH2nBzZhAssiW3NjWaM08aDOzrqgNI68ccKBo' -d '{\"email\":\"test2_invite@example.com\",\"role\":\"applicant\"}')",
-      "Bash(curl -s http://localhost:5000/api/categories/tree)"
+      "Bash(curl -s http://localhost:5000/api/categories/tree)",
+      "Bash(mysql -h 172.16.19.35 -u root -peotmd12!@ warehouse_pos -e ' *)",
+      "Read(//usr/**)",
+      "Read(//c/Program Files/**)",
+      "Bash(cat /proc/version)",
+      "Bash(powershell -command \"\\(Get-Item 'C:\\\\\\\\Program Files \\(x86\\)\\\\\\\\Microsoft\\\\\\\\Edge\\\\\\\\Application\\\\\\\\msedge.exe'\\).VersionInfo.FileVersion\")",
+      "Bash(powershell -command \"\\(Get-Item 'C:\\\\\\\\Program Files\\\\\\\\Microsoft\\\\\\\\Edge\\\\\\\\Application\\\\\\\\msedge.exe'\\).VersionInfo.FileVersion\")",
+      "Bash(npm show *)",
+      "Bash(findstr \":3000 .*LISTENING\")",
+      "Bash(findstr \":5000 .*LISTENING\")",
+      "PowerShell(Get-Process -Name \"node\" -ErrorAction SilentlyContinue | Where-Object { $_.MainWindowTitle -eq \"\" } | Select-Object Id, CPU, @{N='Mem\\(MB\\)';E={[math]::Round\\($_.WorkingSet64/1MB,1\\)}})",
+      "PowerShell(Get-Process node -ErrorAction SilentlyContinue)",
+      "PowerShell(netstat -ano)",
+      "PowerShell(Get-WmiObject Win32_Process -Filter \"ProcessId=9832\")",
+      "Bash(git config *)",
+      "Bash(git commit *)",
+      "Bash(git push *)",
+      "Bash(gh pr create --title 260507_01_NOH --body ' *)",
+      "PowerShell(gh pr create --title \"260507_01_NOH\" --body \"## Summary`n- categories, products, system, update ���Ʈ ����`n- AdminDashboard, api.js ������Ʈ`n- backend/routes/system.js �ű� �߰�`n- version.json ������Ʈ`n`n Generated with Claude Code\" --base main --head WMS 2>&1)"
     ]
   }
 }

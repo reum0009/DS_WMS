@@ -186,8 +186,11 @@ router.get('/tree', auth, async (req, res) => {
       return res.json(roots);
     }
 
-    if (!ensureDeptAdminHasDept(req, res)) return;
     const allowedRootIds = await visibleRootDeptIds(Category, req);
+    if (allowedRootIds.length === 0 && req.user.role !== 'dept_admin') {
+      return res.json(roots);
+    }
+    if (!ensureDeptAdminHasDept(req, res)) return;
     return res.json(roots.filter(r => allowedRootIds.includes(r.id)));
   } catch (err) {
     res.status(500).json({ error: err.message });

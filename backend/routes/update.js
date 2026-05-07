@@ -14,6 +14,7 @@ const UPDATES_DIR  = path.join(ROOT, 'updates');
 const BACKUPS_DIR  = path.join(ROOT, 'updates', 'backups');
 const RELEASES_DIR = path.join(ROOT, 'releases');
 const UPDATE_LOG   = path.join(ROOT, 'update.log');
+const MAX_STORED_PACKAGES = 3;
 
 const { getDeployTargets } = require('../deploy-targets');
 const DEPLOY_TARGETS = getDeployTargets(ROOT);
@@ -64,6 +65,41 @@ function collectFiles(dir, exclude = []) {
 
 function appendLog(msg) {
   fs.appendFileSync(UPDATE_LOG, `[${new Date().toLocaleString('ko-KR')}] ${msg}\n`);
+}
+
+function listZipPackages(dir) {
+  if (!fs.existsSync(dir)) return [];
+  return fs.readdirSync(dir)
+    .filter(f => f.endsWith('.zip'))
+    .map(f => {
+      const fullPath = path.join(dir, f);
+      const stat = fs.statSync(fullPath);
+      return { name: f, fullPath, sizeBytes: stat.size, date: stat.mtime };
+    })
+    .sort((a, b) => new Date(b.date) - new Date(a.date));
+}
+
+function prunePackageDir(dir, keep = MAX_STORED_PACKAGES) {
+  const packages = listZipPackages(dir);
+  const removed = [];
+  for (const pkg of packages.slice(keep)) {
+    try {
+      fs.unlinkSync(pkg.fullPath);
+      removed.push(pkg.name);
+    } catch (e) {
+      appendLog(`패키지 자동 삭제 실패: ${pkg.fullPath} (${e.message})`);
+    }
+  }
+  if (removed.length) appendLog(`패키지 자동 정리(${path.basename(dir)}): ${removed.join(', ')}`);
+  return listZipPackages(dir);
+}
+
+function enforcePackageRetention() {
+  fs.mkdirSync(UPDATES_DIR, { recursive: true });
+  fs.mkdirSync(RELEASES_DIR, { recursive: true });
+  const updatePackages = prunePackageDir(UPDATES_DIR);
+  prunePackageDir(RELEASES_DIR);
+  return updatePackages;
 }
 
 function spawnRestart() {
@@ -165,13 +201,9 @@ router.get('/log', auth, adminOnly, (req, res) => {
 // GET /api/update/packages — updates/ 폴더의 zip 목록
 router.get('/packages', auth, adminOnly, (req, res) => {
   try {
-    const files = fs.readdirSync(UPDATES_DIR)
-      .filter(f => f.endsWith('.zip'))
-      .map(f => {
-        const stat = fs.statSync(path.join(UPDATES_DIR, f));
-        return { name: f, size: (stat.size / 1024).toFixed(1) + ' KB', date: stat.mtime };
-      })
-      .sort((a, b) => new Date(b.date) - new Date(a.date));
+    const files = enforcePackageRetention()
+      .slice(0, MAX_STORED_PACKAGES)
+      .map(f => ({ name: f.name, size: (f.sizeBytes / 1024).toFixed(1) + ' KB', date: f.date }));
     res.json(files);
   } catch { res.json([]); }
 });
@@ -197,6 +229,7 @@ router.post('/upload', auth, adminOnly, upload.single('file'), (req, res) => {
     }
 
     fs.renameSync(req.file.path, dest);
+    enforcePackageRetention();
     res.json({ message: '업로드 완료', filename: finalName, size: fs.statSync(dest).size });
   } catch (e) {
     try { if (req.file?.path && fs.existsSync(req.file.path)) fs.unlinkSync(req.file.path); } catch {}
@@ -364,6 +397,7 @@ router.post('/github/download', auth, adminOnly, async (req, res) => {
     const dest = path.join(UPDATES_DIR, filename);
     const buf  = Buffer.from(await response.arrayBuffer());
     fs.writeFileSync(dest, buf);
+    enforcePackageRetention();
 
     res.json({ message: '다운로드 완료', filename, size: (buf.length / 1024).toFixed(1) + ' KB' });
   } catch (e) { res.status(500).json({ error: e.message }); }
@@ -448,6 +482,7 @@ router.post('/create-package', auth, adminOnly, async (req, res) => {
 
     zip.writeZip(releaseDest);
     fs.copyFileSync(releaseDest, updateDest);
+    enforcePackageRetention();
 
     appendLog(`업데이트 패키지 생성 완료: ${filename}`);
     res.json({

@@ -51,6 +51,10 @@ module.exports = (sequelize, User) => {
         key: 'id'
       }
     },
+    warehouseId: {
+      type: DataTypes.INTEGER,
+      allowNull: true
+    },
     status: {
       type: DataTypes.ENUM('pending', 'approved', 'rejected', 'released'),
       defaultValue: 'pending'

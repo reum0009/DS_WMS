@@ -51,7 +51,7 @@ function WarehouseApp({ user, onLogout }) {
     }
   };
 
-  const commonProps = { user, onLogout, onGoHome: goHome, initialProduct: pendingItem };
+  const commonProps = { user, onLogout, onGoHome: goHome, onNavigate: handleEnterPOS, initialProduct: pendingItem };
 
   if (screen === 'inbound')          return <WarehouseInbound         {...commonProps} />;
   if (screen === 'transfer-inbound') return <WarehouseTransfer        user={user} onLogout={onLogout} onGoHome={goHome} initialTab="inbound" />;
@@ -107,7 +107,7 @@ function App() {
         ];
       case 'applicant':
         return [
-          { id: 'dashboard', label: '� 상품 신청', icon: '🛒' },
+          { id: 'dashboard', label: '전산용품 신청', icon: '▣' },
         ];
       case 'approver':
         return [
@@ -142,9 +142,9 @@ function App() {
     } else if (role === 'applicant') {
       switch (activeScreen) {
         case 'dashboard':
-          return <ApplicantScreen />;
+          return <ApplicantScreen user={user} />;
         default:
-          return <ApplicantScreen />;
+          return <ApplicantScreen user={user} />;
       }
     } else if (role === 'approver') {
       switch (activeScreen) {
@@ -192,14 +192,19 @@ function App() {
 
   return (
     <div className="app-container">
-      <Header user={userInfo} onLogout={handleLogout} />
+      <Header
+        user={userInfo}
+        onLogout={handleLogout}
+        title={user?.role === 'applicant' ? '소모품 신청 POS' : undefined}
+        showWarehouse={user?.role !== 'applicant'}
+      />
       <div className="main-content">
         <Sidebar
           activeScreen={activeScreen}
           onScreenChange={setActiveScreen}
           menuItems={sidebarMenu}
         />
-        <div className="content-area">
+        <div className={`content-area ${user?.role === 'applicant' ? 'content-area-full' : ''}`}>
           {renderScreen()}
         </div>
       </div>

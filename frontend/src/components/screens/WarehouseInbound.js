@@ -30,6 +30,23 @@ function formatClock(d) {
 const SCANNER_SPEED_MS = 50;
 const SCANNER_MIN_LEN  = 3;
 const IDLE_RESET_MS    = 280;
+const COMMAND_BARCODES = {
+  W99999: { screen: 'inbound', label: '입고바코드', type: 'inbound' },
+  W99998: { screen: 'outbound', label: '출고바코드', type: 'outbound' },
+};
+
+function ProductNameSpec({ product, nameStyle = {}, specStyle = {} }) {
+  return (
+    <div>
+      <div style={nameStyle}>{product?.productName || product?.Product?.productName || '—'}</div>
+      {(product?.specification || product?.Product?.specification) && (
+        <div style={{ color: '#8b949e', fontSize: 11, marginTop: 2, ...specStyle }}>
+          {product?.specification || product?.Product?.specification}
+        </div>
+      )}
+    </div>
+  );
+}
 
 function useBarcodeScanner(onScan, enabled = true) {
   const buf = useRef([]);
@@ -45,6 +62,7 @@ function useBarcodeScanner(onScan, enabled = true) {
       if (tag === 'INPUT' && el?.dataset?.barcodeManual !== 'true') return;
       if (e.ctrlKey || e.altKey || e.metaKey) return;
       if (e.key.length > 1 && e.key !== 'Enter') return;
+      e.stopImmediatePropagation();
 
       const now = Date.now();
       if (e.key === 'Enter') {
@@ -65,8 +83,110 @@ function useBarcodeScanner(onScan, enabled = true) {
   }, [enabled, onScan]);
 }
 
+// ── 입고화면 전용 스캔 팝업 (홈화면 ScanMatchPopup과 동일 패턴, 입고만) ──
+function ScanInboundPopup({ product, quantity, onQuantityChange, onQtyPadToggle, onInbound, onClose }) {
+  const qty = quantity || 1;
+  const [showPad, setShowPad] = useState(false);
+  const [padBuf, setPadBuf] = useState(String(qty));
+
+  useEffect(() => {
+    if (!showPad) setPadBuf(String(quantity || 1));
+  }, [quantity, showPad]);
+
+  const openPad  = () => { setPadBuf(String(qty)); setShowPad(true);  onQtyPadToggle?.(true);  };
+  const closePad = ()  => { setShowPad(false); onQtyPadToggle?.(false); };
+
+  const pressPad = (k) => {
+    if (k === 'C') setPadBuf('');
+    else if (k === '←') setPadBuf(p => p.slice(0, -1));
+    else setPadBuf(p => (!p || p === '0') ? k : p + k);
+  };
+
+  useEffect(() => {
+    const h = (e) => {
+      if (e.key === 'Escape') {
+        e.stopImmediatePropagation();
+        if (showPad) { setShowPad(false); onQtyPadToggle?.(false); }
+        else onClose();
+        return;
+      }
+      if (!showPad) return;
+      if (e.key >= '0' && e.key <= '9') {
+        e.stopImmediatePropagation();
+        const k = e.key;
+        setPadBuf(p => (!p || p === '0') ? k : p + k);
+      } else if (e.key === 'Backspace') {
+        e.stopImmediatePropagation();
+        setPadBuf(p => p.slice(0, -1));
+      } else if (e.key === 'Enter') {
+        e.stopImmediatePropagation();
+        const n = parseInt(padBuf, 10);
+        if (n > 0) onQuantityChange(n);
+        setShowPad(false);
+        onQtyPadToggle?.(false);
+      }
+    };
+    window.addEventListener('keydown', h, true);
+    return () => window.removeEventListener('keydown', h, true);
+  }, [showPad, padBuf, onClose, onQuantityChange, onQtyPadToggle]);
+
+  const stockColor = product.currentStock === 0 ? '#f85149'
+    : product.currentStock <= (product.safetyStock || 0) ? '#e3b341' : '#3fb950';
+
+  return (
+    <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.80)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 3000 }}>
+      <div style={{ background: '#161b22', border: '1px solid #30363d', borderRadius: 12, padding: '28px 32px', width: 440, textAlign: 'center' }}>
+        <ProductNameSpec product={product} nameStyle={{ fontSize: 20, fontWeight: 700, color: '#e6edf3', marginBottom: 4 }} />
+        {product.productCode && (
+          <div style={{ fontSize: 12, color: '#8b949e', marginBottom: 4, fontFamily: 'monospace' }}>{product.productCode}</div>
+        )}
+        <div style={{ fontSize: 28, fontWeight: 700, color: stockColor, marginBottom: 2 }}>
+          {product.currentStock} <span style={{ fontSize: 14, fontWeight: 400 }}>{product.unit}</span>
+        </div>
+        <div style={{ fontSize: 12, color: '#8b949e', marginBottom: 16 }}>현재 재고</div>
+
+        {showPad ? (
+          <>
+            <div style={{ background: '#0d1117', border: '2px solid #3fb950', borderRadius: 10, padding: '12px 16px', marginBottom: 10, fontSize: 40, fontWeight: 900, color: '#3fb950', fontFamily: 'monospace', textAlign: 'right' }}>
+              {padBuf || '0'}
+            </div>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 6, marginBottom: 8 }}>
+              {['7','8','9','4','5','6','1','2','3','C','0','←'].map(k => (
+                <button key={k} onClick={() => pressPad(k)} style={{ padding: '14px 0', fontSize: 18, fontWeight: 700, borderRadius: 8, cursor: 'pointer', border: '1px solid #30363d', background: '#1c2128', color: '#e6edf3' }}>{k}</button>
+              ))}
+            </div>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
+              <button onClick={closePad} style={{ padding: '12px', fontSize: 14, background: 'none', border: '1px solid #30363d', color: '#8b949e', borderRadius: 8, cursor: 'pointer' }}>취소</button>
+              <button onClick={() => { const n = parseInt(padBuf, 10); if (n > 0) onQuantityChange(n); closePad(); }}
+                style={{ padding: '12px', fontSize: 14, fontWeight: 700, background: '#0d2616', border: '2px solid #3fb950', color: '#3fb950', borderRadius: 8, cursor: 'pointer' }}>확인</button>
+            </div>
+          </>
+        ) : (
+          <>
+            <div onClick={openPad} title="클릭하여 수량 직접 입력"
+              style={{ background: '#0d2616', border: '2px solid #3fb950', borderRadius: 10, padding: '10px 20px', marginBottom: 6, display: 'inline-block', minWidth: 140, cursor: 'pointer' }}>
+              <div style={{ fontSize: 12, color: '#3fb950', marginBottom: 2 }}>입고 수량 (클릭 시 수정)</div>
+              <div style={{ fontSize: 36, fontWeight: 900, color: '#3fb950', fontFamily: 'monospace' }}>{qty}</div>
+              <div style={{ fontSize: 11, color: '#444c56' }}>{product.unit}</div>
+            </div>
+            <div style={{ fontSize: 11, color: '#444c56', marginBottom: 18 }}>바코드를 계속 스캔하면 수량이 증가합니다</div>
+            <div style={{ display: 'flex', justifyContent: 'center', marginBottom: 12 }}>
+              <button onClick={onInbound} style={{ flex: 1, background: '#0d2616', border: '2px solid #3fb950', color: '#3fb950', padding: '14px 0', borderRadius: 8, cursor: 'pointer', fontSize: 16, fontWeight: 700 }}>
+                📥 입고 추가
+              </button>
+            </div>
+            <div style={{ fontSize: 11, color: '#444c56', marginBottom: 8 }}>입고바코드 스캔 → 자동 추가</div>
+            <button onClick={onClose} style={{ background: 'none', border: 'none', color: '#8b949e', fontSize: 13, cursor: 'pointer' }}>취소 (ESC)</button>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
 // ════════════════════════════════════════════════════════════════
-export default function WarehouseInbound({ user, onGoHome, onLogout, initialProduct }) {
+export default function WarehouseInbound({ user, onGoHome, onLogout, onNavigate, initialProduct }) {
+  const initialProductConsumedRef = useRef(false);
 
   // ── 마스터 데이터 ──────────────────────────────────────────
   const [products,   setProducts]   = useState([]);
@@ -135,6 +255,12 @@ export default function WarehouseInbound({ user, onGoHome, onLogout, initialProd
   // ── 기타 상태 ────────────────────────────────────────────────
   const [qtyPad, setQtyPad] = useState(null);
 
+  // ── 입고화면 내 바코드 스캔 팝업 (ScanInboundPopup) ──────────
+  const [scanPopup, setScanPopup] = useState(null); // { type:'match', product, quantity }
+  const scanPopupRef = useRef(null);
+  useEffect(() => { scanPopupRef.current = scanPopup; }, [scanPopup]);
+  const [scanPopupQtyPadOpen, setScanPopupQtyPadOpen] = useState(false);
+
   const manualRef = useRef(null);
 
   // ── 시계 ────────────────────────────────────────────────────
@@ -184,12 +310,32 @@ export default function WarehouseInbound({ user, onGoHome, onLogout, initialProd
       setRecentInbounds(recent);
       setDataReady(true);
 
-      // initialProduct가 있고 id가 있으면 (매칭된 경우) 바로 수량패드 오픈
-      if (initialProduct && initialProduct.id) {
+      // initialProduct가 있고 id가 있으면 (매칭된 경우) 처리
+      if (!initialProductConsumedRef.current && initialProduct && initialProduct.id) {
         const latest = pList.find(p => p.id === initialProduct.id) || initialProduct;
-        
-        setQtyPad({ product: latest });
-      } else if (initialProduct && initialProduct.barcode) {
+
+        if (initialProduct._qty) {
+          initialProductConsumedRef.current = true;
+          // 바코드로 수량까지 확정된 경우 → 키패드 생략, 바로 세션에 추가
+          setSessionItems([{
+            id:           Date.now(),
+            productId:    latest.id,
+            productCode:  latest.productCode || '',
+            productName:  latest.productName,
+            specification: latest.specification || '',
+            barcode:      latest.barcode || '',
+            categoryId:   latest.categoryId || null,
+            unit:         latest.unit || '개',
+            quantity:     initialProduct._qty,
+            unitPrice:    latest.unitPrice || 0,
+            currentStock: latest.currentStock || 0,
+          }]);
+        } else {
+          initialProductConsumedRef.current = true;
+          setQtyPad({ product: latest, value: 1 });
+        }
+      } else if (!initialProductConsumedRef.current && initialProduct && initialProduct.barcode) {
+        initialProductConsumedRef.current = true;
         // 등록되지 않은 바코드로 들어온 경우 바로 등록 팝업
         setPendingBarcode(initialProduct.barcode);
         setShowAddPopup(true);
@@ -235,6 +381,7 @@ export default function WarehouseInbound({ user, onGoHome, onLogout, initialProd
         productId:    product.id,
         productCode:  product.productCode,
         productName:  product.productName,
+        specification: product.specification || '',
         barcode:      product.barcode || '',
         categoryId:   product.categoryId,
         unit:         product.unit || '개',
@@ -248,10 +395,52 @@ export default function WarehouseInbound({ user, onGoHome, onLogout, initialProd
     setShowBarInput(false);
   };
 
+  // ── 세션에 품목 추가 (스캔팝업 → 세션 반영) ──────────────────
+  const addToSessionFromPopup = useCallback((product, quantity) => {
+    setSessionItems(prev => {
+      const idx = prev.findIndex(x => x.productId === product.id);
+      if (idx >= 0) {
+        const next = [...prev];
+        next[idx] = { ...next[idx], quantity: next[idx].quantity + quantity };
+        return next;
+      }
+      return [...prev, {
+        id:           Date.now(),
+        productId:    product.id,
+        productCode:  product.productCode || '',
+        productName:  product.productName,
+        specification: product.specification || '',
+        barcode:      product.barcode || '',
+        categoryId:   product.categoryId,
+        unit:         product.unit || '개',
+        quantity,
+        unitPrice:    product.unitPrice || 0,
+        currentStock: product.currentStock || 0,
+      }];
+    });
+    showToast(`${product.productName} 추가됨`);
+    setScanPopup(null);
+  }, []); // eslint-disable-line
+
   // ── 바코드 처리 (스캐너 / 수동 공통) ─────────────────────────
   const processBarcode = useCallback((code) => {
     const q = String(code || '').toLowerCase().trim();
     if (!q) return;
+
+    const rawCode = String(code || '').trim().toUpperCase();
+    const command = COMMAND_BARCODES[rawCode];
+    const current = scanPopupRef.current;
+
+    if (command) {
+      if (command.type === 'inbound' && current?.type === 'match') {
+        // 입고 바코드 + 팝업 열림 → 키패드 없이 바로 세션 추가
+        addToSessionFromPopup(current.product, current.quantity || 1);
+        return;
+      }
+      showToast(`${command.label} 인식`);
+      if (command.screen !== 'inbound') onNavigate?.(command.screen);
+      return;
+    }
 
     const found = products.find(p => {
       const b = String(p.barcode || '').toLowerCase().trim();
@@ -260,20 +449,44 @@ export default function WarehouseInbound({ user, onGoHome, onLogout, initialProd
       return b === q || pc === q || hasCodes;
     });
 
+    if (current?.type === 'match') {
+      // 팝업 열린 상태에서 스캔
+      if (found && found.id === current.product?.id) {
+        // 같은 품목 → 수량 증가
+        setScanPopup(prev => ({ ...prev, quantity: (prev.quantity || 1) + 1 }));
+        return;
+      }
+      if (found) {
+        // 다른 품목 → 팝업 교체
+        setScanPopup({ type: 'match', product: found, quantity: 1 });
+        return;
+      }
+      // 미등록 바코드 → 팝업 닫고 등록 팝업 열기
+      setScanPopup(null);
+      showToast(`"${code}" — 미등록 바코드`, 'error');
+      setPendingBarcode(code);
+      setNewProdName('');
+      setShowAddPopup(true);
+      return;
+    }
+
     if (found) {
-      setQtyPad({ product: found });
+      // 팝업 없음 → 새 팝업 열기 (기존 qtyPad 대신)
+      setScanPopup({ type: 'match', product: found, quantity: 1 });
     } else {
-      // 미등록 바코드 → 등록 팝업
+      // 미등록 바코드
       showToast(`"${code}" — 미등록 바코드`, 'error');
       setPendingBarcode(code);
       setNewProdName('');
       setShowAddPopup(true);
     }
-  }, [products]);
+  }, [products, onNavigate, addToSessionFromPopup]);
 
   // ── 전역 스캐너 훅 연결 ──────────────────────────────────────
+  // scanPopup 자체는 스캐너를 막지 않음 (팝업 내 수량증가/명령처리 필요)
+  // 단, 팝업 내 수량 키패드가 열리면 스캐너 비활성
   const anyPopupOpen = confirming || showAddPopup || showCatPopup || !!mainKeypad || !!korKeypad;
-  useBarcodeScanner(processBarcode, dataReady && !anyPopupOpen);
+  useBarcodeScanner(processBarcode, dataReady && !anyPopupOpen && !scanPopupQtyPadOpen);
 
   // ── 수동 바코드 입력 처리 ────────────────────────────────────
   const handleManualScan = (overrideVal) => {
@@ -285,6 +498,16 @@ export default function WarehouseInbound({ user, onGoHome, onLogout, initialProd
   };
 
   // ── 행 선택 ──────────────────────────────────────────────────
+  const handlePrintCommandBarcode = async (type) => {
+    try {
+      const command = Object.values(COMMAND_BARCODES).find(x => x.type === type);
+      await productsAPI.printCommandLabel({ type });
+      showToast(`${command?.label || '명령 바코드'} 출력 요청 완료`);
+    } catch (e) {
+      showToast(e.response?.data?.error || '명령 바코드 출력 실패', 'error');
+    }
+  };
+
   const selectRow = (i) => {
     if (selectedIdx === i) { setSelectedIdx(null); return; }
     setSelectedIdx(i);
@@ -314,9 +537,14 @@ export default function WarehouseInbound({ user, onGoHome, onLogout, initialProd
         sessionRef,
       });
       showToast(`입고 완료 — ${sessionItems.length}종 / ${totalQty}개`);
+      initialProductConsumedRef.current = true;
       setSessionItems([]);
       setSelectedIdx(null);
-      setSessionRef(makeRef());      setTodayCount(c => c + 1);
+      setSessionRef(makeRef());
+      setScanPopup(null);
+      setQtyPad(null);
+      setManualBarcode('');
+      setTodayCount(c => c + 1);
       setConfirming(false);
       await loadAll();
     } catch (e) {
@@ -539,7 +767,7 @@ export default function WarehouseInbound({ user, onGoHome, onLogout, initialProd
                         <div style={{ padding: '11px 6px', fontSize: 13, color: '#8b949e', borderRight: '1px solid #1c2128' }}>{i + 1}</div>
                         {/* 상품명 */}
                         <div style={{ padding: '8px 6px', borderRight: '1px solid #1c2128' }}>
-                          <div style={{ fontSize: 14, color: '#e6edf3', fontWeight: isSel ? 700 : 500 }}>{item.productName}</div>
+                          <ProductNameSpec product={item} nameStyle={{ fontSize: 14, color: '#e6edf3', fontWeight: isSel ? 700 : 500 }} />
                           <div style={{ fontSize: 11, color: '#8b949e', marginTop: 2 }}>
                             {catMap[item.categoryId] || '—'} · {item.unit}
                             {item.barcode && <span style={{ marginLeft: 6, fontFamily: 'monospace' }}>{item.barcode}</span>}
@@ -617,6 +845,14 @@ export default function WarehouseInbound({ user, onGoHome, onLogout, initialProd
           />
 
           {/* 구분선 */}
+          <RightBtn
+            icon="▥"
+            label="입고바코드 출력"
+            sub="W99999"
+            color="#3fb950"
+            onClick={() => handlePrintCommandBarcode('inbound')}
+          />
+
           <div style={{ borderTop: '1px solid #21262d', margin: '4px 0' }} />
 
           {/* 입고 수정 */}
@@ -714,7 +950,7 @@ export default function WarehouseInbound({ user, onGoHome, onLogout, initialProd
             <div style={{ maxHeight: 150, overflow: 'auto', marginBottom: 16 }}>
               {sessionItems.map(i => (
                 <div key={i.id} style={{ display: 'flex', justifyContent: 'space-between', padding: '5px 0', fontSize: 13, borderBottom: '1px solid #21262d' }}>
-                  <span style={{ color: '#e6edf3' }}>{i.productName}</span>
+                  <div style={{ color: '#e6edf3' }}><ProductNameSpec product={i} nameStyle={{ color: '#e6edf3' }} /></div>
                   <span style={{ color: '#3fb950', fontWeight: 600 }}>+{i.quantity} {i.unit}</span>
                 </div>
               ))}
@@ -850,11 +1086,23 @@ export default function WarehouseInbound({ user, onGoHome, onLogout, initialProd
         />
       )}
 
+      {/* ══ 바코드 스캔 팝업 (입고 전용) ═══════════════════════════ */}
+      {scanPopup?.type === 'match' && (
+        <ScanInboundPopup
+          product={scanPopup.product}
+          quantity={scanPopup.quantity || 1}
+          onQuantityChange={(n) => setScanPopup(prev => ({ ...prev, quantity: n }))}
+          onQtyPadToggle={(open) => setScanPopupQtyPadOpen(open)}
+          onInbound={() => addToSessionFromPopup(scanPopup.product, scanPopup.quantity || 1)}
+          onClose={() => setScanPopup(null)}
+        />
+      )}
+
       {/* ══ 수량 입력 패드 (출고와 동일 방식) ══════════════════════ */}
       {qtyPad && (
         <QtyPad
           label={`${qtyPad.product.productName} 입고 수량`}
-          value={1}
+          value={qtyPad.value || 1}
           onConfirm={qty => addToSession(qtyPad.product, qty)}
           onClose={() => { setQtyPad(null); }}
         />
@@ -883,6 +1131,10 @@ export default function WarehouseInbound({ user, onGoHome, onLogout, initialProd
 // ── 수량 입력 패드 (Outbound와 스타일 통일) ─────────────────────────
 function QtyPad({ value, onConfirm, onClose, label }) {
   const [n, setN] = useState(value || 1);
+
+  useEffect(() => {
+    setN(value || 1);
+  }, [value]);
   
   useEffect(() => {
     const fn = (e) => {
@@ -1622,7 +1874,7 @@ function TransferModal({ warehouses, selectedWH, onClose, uiScale = 1 }) {
                         }}>
                           <div style={{ padding: '10px 4px', fontSize: 12, color: '#8b949e' }}>{i + 1}</div>
                           <div style={{ padding: '8px 4px' }}>
-                            <div style={{ fontSize: 13, color: '#e6edf3', fontWeight: 500 }}>{item.Product?.productName || '—'}</div>
+                            <ProductNameSpec product={item.Product} nameStyle={{ fontSize: 13, color: '#e6edf3', fontWeight: 500 }} />
                             <div style={{ fontSize: 10, color: '#58a6ff', fontFamily: 'monospace', marginTop: 1 }}>{item.Product?.productCode}</div>
                           </div>
                           <div style={{ padding: '10px 4px', fontSize: 12, color: '#8b949e' }}>{item.Product?.unit}</div>
@@ -2145,7 +2397,7 @@ function EditModal({ warehouses, editSearch, setEditSearch, onClose, initialRefe
                                 style={{ cursor: 'pointer', padding: '2px 0' }}
                                 title="클릭하여 품목명 변경">
                                 <div style={{ fontSize: 13, color: '#e6edf3', fontWeight: 500 }}>
-                                  {item.Product?.productName || '—'}
+                                  <ProductNameSpec product={item.Product} nameStyle={{ color: '#e6edf3' }} />
                                   <span style={{ fontSize: 9, color: '#388bfd', marginLeft: 4 }}>✏️</span>
                                 </div>
                               </div>

@@ -8,11 +8,13 @@ router.post('/', auth, roleAuth(['applicant', 'admin']), async (req, res) => {
   const sequelize = global.sequelize;
   const transaction = await sequelize.transaction();
   
-  const { type, category, description, items } = req.body;
-  const requestNumber = `REQ-${Date.now()}`;
+  const { type, category, description, items, warehouseId, status, source } = req.body;
+  const isWmsRequest = source === 'wms' || category === 'WMS';
+  const requestNumber = `${isWmsRequest ? 'WMS' : 'REQ'}-${Date.now()}`;
+  const parsedWarehouseId = warehouseId ? parseInt(warehouseId, 10) : null;
   
   try {
-    const { Request, RequestItem, Product } = sequelize.models;
+    const { Request, RequestItem, Product, Warehouse } = sequelize.models;
     
     // 입력 검증
     if (!items || !Array.isArray(items) || items.length === 0) {
@@ -33,6 +35,14 @@ router.post('/', auth, roleAuth(['applicant', 'admin']), async (req, res) => {
     }
 
     // 상품 맵 생성 (빠른 조회용)
+    if (parsedWarehouseId) {
+      const warehouse = await Warehouse.findByPk(parsedWarehouseId, { transaction });
+      if (!warehouse) {
+        await transaction.rollback();
+        return res.status(400).json({ error: '선택한 창고를 찾을 수 없습니다.' });
+      }
+    }
+
     const productMap = {};
     products.forEach(p => {
       productMap[p.id] = p;
@@ -72,7 +82,10 @@ router.post('/', auth, roleAuth(['applicant', 'admin']), async (req, res) => {
       description: description || '',
       quantity: validatedItems.reduce((sum, item) => sum + item.quantity, 0),
       amount: totalAmount,
-      applicantId: req.user.id
+      applicantId: req.user.id,
+      warehouseId: parsedWarehouseId,
+      status: status === 'approved' ? 'approved' : 'pending',
+      approvedAt: status === 'approved' ? new Date() : null
     }, { transaction });
 
     // RequestItem 다중 생성 (bulkCreate)
@@ -99,6 +112,7 @@ router.post('/', auth, roleAuth(['applicant', 'admin']), async (req, res) => {
         amount: request.amount,
         status: request.status,
         applicantId: request.applicantId,
+        warehouseId: request.warehouseId,
         items: validatedItems
       }
     });
@@ -112,18 +126,19 @@ router.post('/', auth, roleAuth(['applicant', 'admin']), async (req, res) => {
 // Get all requests for user
 router.get('/', auth, async (req, res) => {
   try {
-    const { Request, User, RequestItem, Product } = global.sequelize.models;
+    const { Request, User, RequestItem, Product, Warehouse } = global.sequelize.models;
     let requests;
-    if (req.user.role === 'admin') {
+    if (['admin', 'warehouse', 'releaser', 'dept_admin'].includes(req.user.role)) {
       requests = await Request.findAll({
         include: [
           { model: User, as: 'applicant', attributes: ['name', 'email'] },
           { model: User, as: 'approver', attributes: ['name', 'email'] },
           { model: User, as: 'releaser', attributes: ['name', 'email'] },
+          { model: Warehouse, as: 'warehouse', attributes: ['id', 'warehouseName', 'location'] },
           {
             model: RequestItem,
             as: 'items',
-            include: [{ model: Product, attributes: ['productCode', 'productName', 'unit'] }]
+            include: [{ model: Product, attributes: ['productCode', 'productName', 'specification', 'unit'] }]
           }
         ]
       });
@@ -134,10 +149,11 @@ router.get('/', auth, async (req, res) => {
           { model: User, as: 'applicant', attributes: ['name', 'email'] },
           { model: User, as: 'approver', attributes: ['name', 'email'] },
           { model: User, as: 'releaser', attributes: ['name', 'email'] },
+          { model: Warehouse, as: 'warehouse', attributes: ['id', 'warehouseName', 'location'] },
           {
             model: RequestItem,
             as: 'items',
-            include: [{ model: Product, attributes: ['productCode', 'productName', 'unit'] }]
+            include: [{ model: Product, attributes: ['productCode', 'productName', 'specification', 'unit'] }]
           }
         ]
       });
@@ -151,16 +167,17 @@ router.get('/', auth, async (req, res) => {
 // Get request by id
 router.get('/:id', auth, verifyRequestOwnership, async (req, res) => {
   try {
-    const { Request, User, RequestItem, Product } = global.sequelize.models;
+    const { Request, User, RequestItem, Product, Warehouse } = global.sequelize.models;
     const request = await Request.findByPk(req.params.id, {
       include: [
         { model: User, as: 'applicant', attributes: ['name', 'email'] },
         { model: User, as: 'approver', attributes: ['name', 'email'] },
         { model: User, as: 'releaser', attributes: ['name', 'email'] },
+        { model: Warehouse, as: 'warehouse', attributes: ['id', 'warehouseName', 'location'] },
         {
           model: RequestItem,
           as: 'items',
-          include: [{ model: Product, attributes: ['productCode', 'productName', 'unit', 'currentStock'] }]
+          include: [{ model: Product, attributes: ['productCode', 'productName', 'specification', 'unit', 'currentStock'] }]
         }
       ]
     });

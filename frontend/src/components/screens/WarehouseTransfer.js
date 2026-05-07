@@ -1,5 +1,5 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { warehouseTransferAPI, warehousesAPI, productsAPI } from '../../api/api';
+import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
+import { warehouseTransferAPI, warehousesAPI, productsAPI, categoriesAPI } from '../../api/api';
 
 // ── 날짜 포맷 ────────────────────────────────────────────────────
 function fmtDT(d) {
@@ -15,6 +15,95 @@ function fmtD(d) {
 function formatClock(d) {
   const p = n => String(n).padStart(2, '0');
   return `${d.getFullYear()}.${p(d.getMonth()+1)}.${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+}
+
+const flattenCategoryTree = (nodes, out = []) => {
+  (nodes || []).forEach(n => {
+    out.push(n);
+    if (n.children?.length) flattenCategoryTree(n.children, out);
+  });
+  return out;
+};
+
+const defaultExpandedToLevel = (nodes, visibleLevel = 3, out = new Set()) => {
+  (nodes || []).forEach(n => {
+    if (n.children?.length && n.level < visibleLevel) {
+      out.add(n.id);
+      defaultExpandedToLevel(n.children, visibleLevel, out);
+    }
+  });
+  return out;
+};
+
+function ProductNameSpec({ product, nameStyle = {}, specStyle = {} }) {
+  const name = product?.productName || product?.Product?.productName || product?.product?.productName || '—';
+  const spec = product?.specification || product?.Product?.specification || product?.product?.specification;
+  return (
+    <div>
+      <div style={nameStyle}>{name}</div>
+      {spec && <div style={{ color: '#8b949e', fontSize: 11, marginTop: 2, ...specStyle }}>{spec}</div>}
+    </div>
+  );
+}
+
+function TransferCategoryTreeNode({ node, selectedId, expandedIds, onSelect, onToggle, depth = 0 }) {
+  const hasChildren = node.children && node.children.length > 0;
+  const open = expandedIds.has(node.id);
+  const selected = selectedId === node.id;
+  const color = node.color || '#f0883e';
+
+  return (
+    <div style={{ marginLeft: depth === 0 ? 0 : 12 }}>
+      <div
+        onClick={() => onSelect(node.id)}
+        style={{
+          display: 'flex', alignItems: 'center', gap: 5, minHeight: 30,
+          padding: '4px 6px', borderRadius: 5, marginBottom: 2,
+          background: selected ? '#2d1800' : 'transparent',
+          border: selected ? '1px solid #f0883e77' : '1px solid transparent',
+          cursor: 'pointer',
+        }}
+      >
+        <button
+          onClick={(e) => { e.stopPropagation(); if (hasChildren) onToggle(node.id); }}
+          style={{
+            background: 'none', border: 'none', color: hasChildren ? '#8b949e' : '#444c56',
+            cursor: hasChildren ? 'pointer' : 'default', fontSize: 12, width: 16,
+            flexShrink: 0, padding: 0,
+          }}
+        >
+          {hasChildren ? (open ? '-' : '+') : '·'}
+        </button>
+        <span style={{
+          fontSize: 9, fontWeight: 800, padding: '1px 4px', borderRadius: 3,
+          background: `${color}22`, color, border: `1px solid ${color}44`, flexShrink: 0,
+        }}>L{node.level}</span>
+        <span style={{
+          flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+          color: selected ? '#e6edf3' : (node.level === 1 ? '#e6edf3' : '#c9d1d9'),
+          fontSize: 12, fontWeight: selected || node.level === 1 ? 800 : 500,
+        }}>
+          {node.name}
+        </span>
+        {hasChildren && <span style={{ fontSize: 10, color: '#444c56', flexShrink: 0 }}>{node.children.length}</span>}
+      </div>
+      {open && hasChildren && (
+        <div style={{ borderLeft: `1px solid ${color}33`, marginLeft: 18, paddingLeft: 3 }}>
+          {node.children.map(child => (
+            <TransferCategoryTreeNode
+              key={child.id}
+              node={child}
+              selectedId={selectedId}
+              expandedIds={expandedIds}
+              onSelect={onSelect}
+              onToggle={onToggle}
+              depth={depth + 1}
+            />
+          ))}
+        </div>
+      )}
+    </div>
+  );
 }
 
 // ── 바코드 스캐너 훅 ─────────────────────────────────────────────
@@ -120,10 +209,14 @@ function NumKeypad({ label, value, onConfirm, onClose }) {
 // ─ 창고간 입고 탭 ────────────────────────────────────────────────
 // ════════════════════════════════════════════════════════════════
 function InboundContent({ user, showToast, onGoHome }) {
+  const [view,        setView]        = useState('pending'); // pending | history
   const [pendingList, setPendingList] = useState([]);
+  const [historyList, setHistoryList] = useState([]);
+  const [historyStatus, setHistoryStatus] = useState('all');
   const [outNumber,   setOutNumber]   = useState('');
   const [transfer,    setTransfer]    = useState(null);
   const [loading,     setLoading]     = useState(false);
+  const [histLoading, setHistLoading] = useState(false);
   const [recvQtyMap,  setRecvQtyMap]  = useState({});
   const [confirming,  setConfirming]  = useState(false);
   const [submitting,  setSubmitting]  = useState(false);
@@ -138,6 +231,22 @@ function InboundContent({ user, showToast, onGoHome }) {
   }, [user?.warehouseId]);
 
   useEffect(() => { loadPending(); }, [loadPending]);
+
+  const loadHistory = useCallback(async () => {
+    setHistLoading(true);
+    try {
+      const params = { toWarehouseId: user?.warehouseId };
+      if (historyStatus !== 'all') params.status = historyStatus;
+      const res = await warehouseTransferAPI.getAll(params);
+      setHistoryList(res.data || []);
+    } catch {
+      showToast('입고 내역 로드 실패', 'error');
+    } finally {
+      setHistLoading(false);
+    }
+  }, [historyStatus, user?.warehouseId, showToast]);
+
+  useEffect(() => { if (view === 'history') loadHistory(); }, [view, loadHistory]);
 
   const searchTransfer = useCallback(async (num) => {
     const q = (num || outNumber).trim().toUpperCase();
@@ -177,6 +286,7 @@ function InboundContent({ user, showToast, onGoHome }) {
       const res = await warehouseTransferAPI.confirm(transfer.id, { receivedItems });
       showToast(`입고 확정 완료 — 입고번호: ${res.data.transferInNumber}`);
       loadPending();
+      if (view === 'history') loadHistory();
       await searchTransfer(transfer.transferOutNumber);
       setConfirming(false);
     } catch (e) { showToast(e.response?.data?.error || '확정 실패', 'error'); }
@@ -221,6 +331,19 @@ function InboundContent({ user, showToast, onGoHome }) {
 
       {/* 왼쪽: 대기 목록 */}
       <div style={{ width: 300, background: '#0d1117', borderRight: '1px solid #21262d', display: 'flex', flexDirection: 'column', overflow: 'hidden', flexShrink: 0 }}>
+        <div style={{ display: 'flex', borderBottom: '1px solid #21262d', background: '#161b22' }}>
+          {[['pending', '입고 대기'], ['history', '입고 내역']].map(([id, label]) => (
+            <button key={id} onClick={() => { setView(id); if (id === 'history') loadHistory(); }}
+              style={{
+                flex: 1, padding: '10px 0', background: 'none', border: 'none',
+                borderBottom: view === id ? '2px solid #3fb950' : '2px solid transparent',
+                color: view === id ? '#3fb950' : '#8b949e',
+                fontSize: 12, fontWeight: view === id ? 800 : 500, cursor: 'pointer',
+              }}>
+              {label}
+            </button>
+          ))}
+        </div>
         <div style={{ padding: '12px', background: '#161b22', borderBottom: '1px solid #21262d' }}>
           <div style={{ fontSize: 12, fontWeight: 600, color: '#a371f7', marginBottom: 8 }}>출고번호 직접 조회</div>
           <div style={{ display: 'flex', gap: 6 }}>
@@ -233,33 +356,81 @@ function InboundContent({ user, showToast, onGoHome }) {
               style={{ background: '#1158b7', border: 'none', color: '#fff', padding: '0 12px', borderRadius: 6, cursor: 'pointer', fontWeight: 700 }}>🔍</button>
           </div>
         </div>
-        <div style={{ padding: '10px 12px', borderBottom: '1px solid #21262d', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-          <span style={{ fontSize: 12, fontWeight: 600, color: '#8b949e' }}>입고 대기 ({pendingList.length})</span>
-          <button onClick={loadPending} style={{ background: 'none', border: 'none', color: '#58a6ff', fontSize: 11, cursor: 'pointer' }}>새로고침</button>
-        </div>
-        <div style={{ flex: 1, overflowY: 'auto' }}>
-          {pendingList.length === 0 ? (
-            <div style={{ padding: 30, textAlign: 'center', color: '#444c56', fontSize: 12 }}>대기 중인 이동 건이 없습니다</div>
-          ) : pendingList.map(item => {
-            const isSel = transfer?.id === item.id;
-            return (
-              <div key={item.id} onClick={() => searchTransfer(item.transferOutNumber)}
-                style={{ padding: '11px 14px', borderBottom: '1px solid #21262d', cursor: 'pointer',
-                  background: isSel ? '#1f3a5f' : 'transparent',
-                  borderLeft: isSel ? '4px solid #58a6ff' : '4px solid transparent' }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 3 }}>
-                  <span style={{ fontSize: 12, fontWeight: 700, color: isSel ? '#58a6ff' : '#e6edf3', fontFamily: 'monospace' }}>{item.transferOutNumber}</span>
-                  <span style={{ fontSize: 11, color: '#8b949e' }}>{fmtD(item.outAt)}</span>
-                </div>
-                <div style={{ fontSize: 11, color: '#8b949e' }}>
-                  {item.fromWarehouse?.warehouseName} → <span style={{ color: '#e6edf3' }}>{item.items?.length || 0}종</span>
-                </div>
+        {view === 'pending' ? (
+          <>
+            <div style={{ padding: '10px 12px', borderBottom: '1px solid #21262d', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <span style={{ fontSize: 12, fontWeight: 600, color: '#8b949e' }}>입고 대기 ({pendingList.length})</span>
+              <button onClick={loadPending} style={{ background: 'none', border: 'none', color: '#58a6ff', fontSize: 11, cursor: 'pointer' }}>새로고침</button>
+            </div>
+            <div style={{ flex: 1, overflowY: 'auto' }}>
+              {pendingList.length === 0 ? (
+                <div style={{ padding: 30, textAlign: 'center', color: '#444c56', fontSize: 12 }}>대기 중인 이동 건이 없습니다</div>
+              ) : pendingList.map(item => {
+                const isSel = transfer?.id === item.id;
+                return (
+                  <div key={item.id} onClick={() => searchTransfer(item.transferOutNumber)}
+                    style={{ padding: '11px 14px', borderBottom: '1px solid #21262d', cursor: 'pointer',
+                      background: isSel ? '#1f3a5f' : 'transparent',
+                      borderLeft: isSel ? '4px solid #58a6ff' : '4px solid transparent' }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 3 }}>
+                      <span style={{ fontSize: 12, fontWeight: 700, color: isSel ? '#58a6ff' : '#e6edf3', fontFamily: 'monospace' }}>{item.transferOutNumber}</span>
+                      <span style={{ fontSize: 11, color: '#8b949e' }}>{fmtD(item.outAt)}</span>
+                    </div>
+                    <div style={{ fontSize: 11, color: '#8b949e' }}>
+                      {item.fromWarehouse?.warehouseName} → <span style={{ color: '#e6edf3' }}>{item.items?.length || 0}종</span>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </>
+        ) : (
+          <>
+            <div style={{ padding: '10px 12px', borderBottom: '1px solid #21262d' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+                <span style={{ fontSize: 12, fontWeight: 600, color: '#8b949e' }}>입고 내역 ({historyList.length})</span>
+                <button onClick={loadHistory} disabled={histLoading} style={{ background: 'none', border: 'none', color: '#58a6ff', fontSize: 11, cursor: 'pointer' }}>새로고침</button>
               </div>
-            );
-          })}
-        </div>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 4 }}>
+                {[['all','전체'],['pending','대기'],['confirmed','완료'],['cancelled','취소']].map(([id, label]) => (
+                  <button key={id} onClick={() => setHistoryStatus(id)}
+                    style={{ height: 26, borderRadius: 5, border: `1px solid ${historyStatus === id ? '#3fb950' : '#30363d'}`,
+                      background: historyStatus === id ? '#0d2616' : '#0d1117', color: historyStatus === id ? '#3fb950' : '#8b949e',
+                      fontSize: 11, fontWeight: 700, cursor: 'pointer' }}>
+                    {label}
+                  </button>
+                ))}
+              </div>
+            </div>
+            <div style={{ flex: 1, overflowY: 'auto' }}>
+              {histLoading ? (
+                <div style={{ padding: 30, textAlign: 'center', color: '#58a6ff', fontSize: 12 }}>불러오는 중...</div>
+              ) : historyList.length === 0 ? (
+                <div style={{ padding: 30, textAlign: 'center', color: '#444c56', fontSize: 12 }}>입고 내역이 없습니다</div>
+              ) : historyList.map(item => {
+                const isSel = transfer?.id === item.id;
+                const qty = (item.items || []).reduce((s, it) => s + Number(it.receivedQuantity ?? it.quantity ?? 0), 0);
+                return (
+                  <div key={item.id} onClick={() => searchTransfer(item.transferOutNumber)}
+                    style={{ padding: '11px 14px', borderBottom: '1px solid #21262d', cursor: 'pointer',
+                      background: isSel ? '#1f3a5f' : 'transparent',
+                      borderLeft: isSel ? '4px solid #58a6ff' : '4px solid transparent' }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4, gap: 8 }}>
+                      <span style={{ fontSize: 12, fontWeight: 700, color: isSel ? '#58a6ff' : '#e6edf3', fontFamily: 'monospace' }}>{item.transferInNumber || item.transferOutNumber}</span>
+                      <StatusBadge status={item.status} />
+                    </div>
+                    <div style={{ fontSize: 11, color: '#8b949e', lineHeight: 1.5 }}>
+                      <div>{item.fromWarehouse?.warehouseName || '—'} → {item.items?.length || 0}종 / {qty.toLocaleString()}개</div>
+                      <div>{item.inAt ? `입고 ${fmtD(item.inAt)}` : `출고 ${fmtD(item.outAt)}`}</div>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </>
+        )}
         <div style={{ padding: 10, borderTop: '1px solid #21262d', fontSize: 11, color: '#444c56', lineHeight: 1.5 }}>
-          ※ 타 창고에서 보낸 이동 내역. 선택 후 입고 확정하세요.
+          {view === 'pending' ? '※ 타 창고에서 보낸 이동 내역. 선택 후 입고 확정하세요.' : '※ 내 창고가 도착지인 창고간 이동 내역입니다.'}
         </div>
       </div>
 
@@ -310,7 +481,7 @@ function InboundContent({ user, showToast, onGoHome }) {
                 <div style={{ padding: '11px 6px', fontSize: 12, color: '#8b949e', borderRight: '1px solid #1c2128' }}>{i + 1}</div>
                 <div style={{ padding: '11px 6px', fontSize: 11, color: '#8b949e', fontFamily: 'monospace', borderRight: '1px solid #1c2128', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{prod?.productCode || '—'}</div>
                 <div style={{ padding: '8px 6px', borderRight: '1px solid #1c2128' }}>
-                  <div style={{ fontSize: 14, color: '#e6edf3', fontWeight: 500 }}>{prod?.productName || '—'}</div>
+                  <ProductNameSpec product={prod} nameStyle={{ fontSize: 14, color: '#e6edf3', fontWeight: 500 }} />
                   {prod?.barcode && <div style={{ fontSize: 10, color: '#8b949e', fontFamily: 'monospace', marginTop: 1 }}>{prod.barcode}</div>}
                 </div>
                 <div style={{ padding: '11px 6px', fontSize: 12, color: '#8b949e', borderRight: '1px solid #1c2128' }}>{prod?.unit || '—'}</div>
@@ -370,6 +541,10 @@ function InboundContent({ user, showToast, onGoHome }) {
 function OutboundContent({ user, showToast, warehouses }) {
   const [subTab,   setSubTab]   = useState('new'); // 'new' | 'history'
   const [products, setProducts] = useState([]);
+  const [catTree,  setCatTree]  = useState([]);
+  const [categories, setCategories] = useState([]);
+  const [selectedCatId, setSelectedCatId] = useState(null);
+  const [expandedCatIds, setExpandedCatIds] = useState(new Set());
   const [search,   setSearch]   = useState('');
   const [items,    setItems]    = useState([]); // [{productId, product, quantity}]
   const [destWH,   setDestWH]   = useState('');
@@ -381,25 +556,44 @@ function OutboundContent({ user, showToast, warehouses }) {
   const [selectedTrans, setSelectedTrans] = useState(null);
   const [editQtyMap,    setEditQtyMap]    = useState({});
   const [histLoading,   setHistLoading]   = useState(false);
+  const [historyStatus, setHistoryStatus] = useState('all');
 
   const deptWHs = warehouses.filter(w => w.deptId === user?.deptId && w.id !== user?.warehouseId);
 
   useEffect(() => {
-    productsAPI.getAll(user?.warehouseId ? { warehouseId: user.warehouseId } : undefined)
-      .then(r => setProducts(r.data || []))
+    Promise.all([
+      productsAPI.getAll(user?.warehouseId ? { warehouseId: user.warehouseId } : undefined),
+      categoriesAPI.getTree()
+    ])
+      .then(([pRes, cRes]) => {
+        const tree = cRes.data || [];
+        setProducts(pRes.data || []);
+        setCatTree(tree);
+        setCategories(flattenCategoryTree(tree, []));
+        setExpandedCatIds(defaultExpandedToLevel(tree, 3));
+      })
       .catch(() => {});
   }, [user?.warehouseId]);
 
   const loadHistory = useCallback(async () => {
     setHistLoading(true);
     try {
-      const res = await warehouseTransferAPI.getAll({ status: 'pending', fromWarehouseId: user?.warehouseId });
-      setPendingList(res.data || []);
+      const params = { fromWarehouseId: user?.warehouseId };
+      if (historyStatus !== 'all') params.status = historyStatus;
+      const res = await warehouseTransferAPI.getAll(params);
+      const rows = res.data || [];
+      setPendingList(rows);
     } catch { showToast('내역 로드 실패', 'error'); }
     finally { setHistLoading(false); }
-  }, [user?.warehouseId, showToast]);
+  }, [historyStatus, user?.warehouseId, showToast]);
 
   useEffect(() => { if (subTab === 'history') loadHistory(); }, [subTab, loadHistory]);
+
+  const getStatusInfo = (status) => {
+    if (status === 'confirmed') return { label: '상대 입고완료', color: '#3fb950', bg: '#0d2616' };
+    if (status === 'cancelled') return { label: '취소', color: '#f85149', bg: '#2d0d0b' };
+    return { label: '입고대기', color: '#f0883e', bg: '#2d1800' };
+  };
 
   const addProduct = (prod, qty) => {
     const q = Math.max(1, Number(qty) || 1);
@@ -430,6 +624,10 @@ function OutboundContent({ user, showToast, warehouses }) {
 
   const handleUpdateTransfer = async () => {
     if (!selectedTrans) return;
+    if (selectedTrans.status !== 'pending') {
+      showToast('입고대기 상태의 이동건만 수정할 수 있습니다', 'error');
+      return;
+    }
     setHistLoading(true);
     try {
       const updateItems = selectedTrans.items.map(it => ({ id: it.id, quantity: Number(editQtyMap[it.id] ?? it.quantity) }));
@@ -441,6 +639,10 @@ function OutboundContent({ user, showToast, warehouses }) {
   };
 
   const handleCancel = async (id) => {
+    if (selectedTrans?.status !== 'pending') {
+      showToast('입고대기 상태의 이동건만 취소할 수 있습니다', 'error');
+      return;
+    }
     if (!window.confirm('이동을 취소하시겠습니까?\n출고 창고의 재고가 복구됩니다.')) return;
     setHistLoading(true);
     try {
@@ -452,9 +654,60 @@ function OutboundContent({ user, showToast, warehouses }) {
     finally { setHistLoading(false); }
   };
 
-  const filtered = products.filter(p =>
-    !search || p.productName?.includes(search) || (p.barcode || '').includes(search) || (p.productCode || '').includes(search)
-  );
+  const { catMap, catDescendants } = useMemo(() => {
+    const map = {};
+    const childrenOf = {};
+    const idSet = new Set(categories.map(c => c.id));
+    categories.forEach(c => {
+      map[c.id] = c.name;
+      childrenOf[c.id] = [];
+    });
+    categories.forEach(c => {
+      if (c.parentId && idSet.has(c.parentId)) childrenOf[c.parentId].push(c);
+    });
+    const descendants = {};
+    categories.forEach(c => {
+      const ids = new Set([c.id]);
+      const stack = [c.id];
+      while (stack.length) {
+        const cur = stack.pop();
+        (childrenOf[cur] || []).forEach(ch => {
+          if (!ids.has(ch.id)) { ids.add(ch.id); stack.push(ch.id); }
+        });
+      }
+      descendants[c.id] = ids;
+    });
+    return { catMap: map, catDescendants: descendants };
+  }, [categories]);
+
+  const toggleCat = (id) => {
+    setExpandedCatIds(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
+  const filtered = useMemo(() => {
+    let list = products;
+    if (selectedCatId) {
+      const ids = catDescendants[selectedCatId] || new Set([selectedCatId]);
+      list = list.filter(p => ids.has(p.categoryId));
+    }
+    if (search.trim()) {
+      const q = search.trim().toLowerCase();
+      list = list.filter(p =>
+        (p.productName || '').toLowerCase().includes(q) ||
+        (p.barcode || '').toLowerCase().includes(q) ||
+        (p.productCode || '').toLowerCase().includes(q)
+      );
+    }
+    return [...list].sort((a, b) =>
+      (catMap[a.categoryId] || 'zzz 미분류').localeCompare(catMap[b.categoryId] || 'zzz 미분류', 'ko') ||
+      (a.productName || '').localeCompare(b.productName || '', 'ko')
+    );
+  }, [products, selectedCatId, search, catDescendants, catMap]);
 
   return (
     <div style={{ flex: 1, display: 'flex', overflow: 'hidden' }}>
@@ -466,13 +719,50 @@ function OutboundContent({ user, showToast, warehouses }) {
           onClose={() => setQtyPad(null)} />
       )}
 
-      {/* 왼쪽: 품목 목록 */}
-      <div style={{ width: 280, background: '#0d1117', borderRight: '1px solid #21262d', display: 'flex', flexDirection: 'column', overflow: 'hidden', flexShrink: 0 }}>
+      {/* 왼쪽: 카테고리 + 품목 목록 */}
+      <div style={{ width: 310, background: '#0d1117', borderRight: '1px solid #21262d', display: 'flex', flexDirection: 'column', overflow: 'hidden', flexShrink: 0 }}>
         <div style={{ padding: '10px 12px', borderBottom: '1px solid #21262d', background: '#161b22' }}>
           <div style={{ fontSize: 12, fontWeight: 600, color: '#f0883e', marginBottom: 6 }}>품목 선택 (클릭하여 추가)</div>
           <input value={search} onChange={e => setSearch(e.target.value)}
             placeholder="품목명 / 바코드 검색..."
             style={{ width: '100%', background: '#0d1117', border: '1px solid #30363d', borderRadius: 6, color: '#e6edf3', padding: '7px 10px', fontSize: 12, boxSizing: 'border-box' }} />
+        </div>
+        <div style={{ maxHeight: '42%', minHeight: 170, display: 'flex', flexDirection: 'column', borderBottom: '1px solid #21262d', background: '#111720' }}>
+          <div style={{ padding: '9px 12px', borderBottom: '1px solid #21262d', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
+            <span style={{ fontSize: 12, fontWeight: 700, color: '#8b949e' }}>카테고리</span>
+            <button
+              onClick={() => setSelectedCatId(null)}
+              style={{
+                background: selectedCatId === null ? '#2d1800' : '#0d1117',
+                border: `1px solid ${selectedCatId === null ? '#f0883e' : '#30363d'}`,
+                color: selectedCatId === null ? '#f0883e' : '#8b949e',
+                padding: '4px 9px', borderRadius: 5, cursor: 'pointer',
+                fontSize: 11, fontWeight: 800,
+              }}
+            >
+              전체
+            </button>
+          </div>
+          <div style={{ flex: 1, overflowY: 'auto', padding: '8px 10px 10px' }}>
+            {catTree.length === 0 ? (
+              <div style={{ color: '#444c56', fontSize: 12, textAlign: 'center', padding: '24px 8px' }}>등록된 카테고리가 없습니다</div>
+            ) : (
+              catTree.map(root => (
+                <div key={root.id} style={{ marginBottom: 7, borderBottom: '1px solid #21262d', paddingBottom: 7 }}>
+                  <TransferCategoryTreeNode
+                    node={root}
+                    selectedId={selectedCatId}
+                    expandedIds={expandedCatIds}
+                    onSelect={setSelectedCatId}
+                    onToggle={toggleCat}
+                  />
+                </div>
+              ))
+            )}
+          </div>
+        </div>
+        <div style={{ padding: '8px 12px', borderBottom: '1px solid #21262d', color: '#8b949e', fontSize: 11, fontWeight: 700 }}>
+          품목 {filtered.length}종
         </div>
         <div style={{ flex: 1, overflowY: 'auto' }}>
           {filtered.length === 0 ? (
@@ -484,10 +774,13 @@ function OutboundContent({ user, showToast, warehouses }) {
                 style={{ padding: '10px 12px', borderBottom: '1px solid #1c2128', cursor: 'pointer',
                   background: inList ? '#1a2d1a' : 'transparent',
                   borderLeft: inList ? '3px solid #3fb950' : '3px solid transparent' }}>
-                <div style={{ fontSize: 13, fontWeight: 600, color: '#e6edf3' }}>{prod.productName}</div>
+                <ProductNameSpec product={prod} nameStyle={{ fontSize: 13, fontWeight: 600, color: '#e6edf3' }} />
                 <div style={{ fontSize: 11, color: '#8b949e', display: 'flex', gap: 8, marginTop: 2 }}>
                   <span>재고: <span style={{ color: prod.currentStock <= (prod.safetyStock || 0) ? '#f85149' : '#3fb950' }}>{prod.currentStock}</span> {prod.unit}</span>
                   {prod.productCode && <span style={{ fontFamily: 'monospace' }}>{prod.productCode}</span>}
+                </div>
+                <div style={{ fontSize: 10, color: '#444c56', marginTop: 2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                  {catMap[prod.categoryId] || '미분류'}
                 </div>
               </div>
             );
@@ -541,7 +834,7 @@ function OutboundContent({ user, showToast, warehouses }) {
                   </div>
                   {items.map(it => (
                     <div key={it.productId} style={{ display: 'grid', gridTemplateColumns: '1fr 120px 60px 36px', padding: '8px 12px', borderBottom: '1px solid #21262d', alignItems: 'center' }}>
-                      <div style={{ fontSize: 13, color: '#e6edf3', fontWeight: 500 }}>{it.product.productName}</div>
+                      <ProductNameSpec product={it.product} nameStyle={{ fontSize: 13, color: '#e6edf3', fontWeight: 500 }} />
                       <div style={{ textAlign: 'right' }}>
                         <input type="number" min="1"
                           value={it.quantity}
@@ -571,29 +864,45 @@ function OutboundContent({ user, showToast, warehouses }) {
             {/* 내역 목록 */}
             <div style={{ width: 320, borderRight: '1px solid #21262d', overflowY: 'auto', flexShrink: 0 }}>
               <div style={{ padding: '10px 12px', borderBottom: '1px solid #21262d', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                <span style={{ fontSize: 12, color: '#8b949e' }}>이동 대기 ({pendingList.length}건)</span>
+                <span style={{ fontSize: 12, color: '#8b949e' }}>출고 이동 내역 ({pendingList.length}건)</span>
                 <button onClick={loadHistory} style={{ background: 'none', border: 'none', color: '#58a6ff', fontSize: 11, cursor: 'pointer' }}>새로고침</button>
+              </div>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 4, padding: '0 12px 10px', borderBottom: '1px solid #21262d' }}>
+                {[['all','전체'],['pending','대기'],['confirmed','완료'],['cancelled','취소']].map(([id, label]) => (
+                  <button key={id} onClick={() => setHistoryStatus(id)}
+                    style={{ height: 26, borderRadius: 5, border: `1px solid ${historyStatus === id ? '#f0883e' : '#30363d'}`,
+                      background: historyStatus === id ? '#2d1800' : '#0d1117', color: historyStatus === id ? '#f0883e' : '#8b949e',
+                      fontSize: 11, fontWeight: 700, cursor: 'pointer' }}>
+                    {label}
+                  </button>
+                ))}
               </div>
               {histLoading ? (
                 <div style={{ padding: 20, textAlign: 'center', color: '#8b949e', fontSize: 12 }}>로딩 중...</div>
               ) : pendingList.length === 0 ? (
-                <div style={{ padding: 30, textAlign: 'center', color: '#444c56', fontSize: 12 }}>이동 중인 내역이 없습니다</div>
-              ) : pendingList.map(t => (
+                <div style={{ padding: 30, textAlign: 'center', color: '#444c56', fontSize: 12 }}>출고 이동 내역이 없습니다</div>
+              ) : pendingList.map(t => {
+                const status = getStatusInfo(t.status);
+                return (
                 <div key={t.id}
                   onClick={() => { setSelectedTrans(t); const qm = {}; t.items.forEach(it => qm[it.id] = it.quantity); setEditQtyMap(qm); }}
                   style={{ padding: '12px 14px', borderBottom: '1px solid #21262d', cursor: 'pointer',
                     background: selectedTrans?.id === t.id ? '#2d2000' : 'transparent',
                     borderLeft: selectedTrans?.id === t.id ? '4px solid #f0883e' : '4px solid transparent' }}>
                   <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}>
-                    <span style={{ fontSize: 13, fontWeight: 700, color: '#f0883e', fontFamily: 'monospace' }}>{t.transferOutNumber}</span>
+                    <span style={{ fontSize: 13, fontWeight: 700, color: status.color, fontFamily: 'monospace' }}>{t.transferOutNumber}</span>
                     <span style={{ fontSize: 11, color: '#8b949e' }}>{fmtD(t.outAt)}</span>
+                  </div>
+                  <div style={{ marginBottom: 4 }}>
+                    <span style={{ fontSize: 10, fontWeight: 800, color: status.color, background: status.bg, border: `1px solid ${status.color}55`, borderRadius: 5, padding: '2px 6px' }}>{status.label}</span>
                   </div>
                   <div style={{ fontSize: 11, color: '#8b949e' }}>
                     → <span style={{ color: '#e6edf3' }}>{t.toWarehouse?.warehouseName}</span>
                     &nbsp;|&nbsp;{t.items?.length || 0}종 / {t.items?.reduce((s, it) => s + it.quantity, 0)}개
                   </div>
                 </div>
-              ))}
+                );
+              })}
             </div>
 
             {/* 상세 */}
@@ -603,8 +912,13 @@ function OutboundContent({ user, showToast, warehouses }) {
               ) : (
                 <>
                   <div style={{ padding: '12px 16px', borderBottom: '1px solid #21262d', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                    <span style={{ fontSize: 14, fontWeight: 700, color: '#f0883e', fontFamily: 'monospace' }}>{selectedTrans.transferOutNumber}</span>
-                    <button onClick={() => handleCancel(selectedTrans.id)}
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                      <span style={{ fontSize: 14, fontWeight: 700, color: '#f0883e', fontFamily: 'monospace' }}>{selectedTrans.transferOutNumber}</span>
+                      <span style={{ fontSize: 11, fontWeight: 800, color: getStatusInfo(selectedTrans.status).color, background: getStatusInfo(selectedTrans.status).bg, border: `1px solid ${getStatusInfo(selectedTrans.status).color}55`, borderRadius: 5, padding: '2px 7px' }}>
+                        {getStatusInfo(selectedTrans.status).label}
+                      </span>
+                    </div>
+                    <button onClick={() => handleCancel(selectedTrans.id)} disabled={selectedTrans.status !== 'pending'}
                       style={{ background: 'none', border: '1px solid #f85149', color: '#f85149', padding: '5px 12px', borderRadius: 4, cursor: 'pointer', fontSize: 12 }}>🚫 이동 전체 취소</button>
                   </div>
                   <div style={{ flex: 1, overflowY: 'auto' }}>
@@ -613,10 +927,11 @@ function OutboundContent({ user, showToast, warehouses }) {
                       const changed = Number(cur) !== it.quantity;
                       return (
                         <div key={it.id} style={{ display: 'grid', gridTemplateColumns: '1fr 90px 60px', padding: '10px 16px', borderBottom: '1px solid #21262d', alignItems: 'center' }}>
-                          <div style={{ fontSize: 13, color: '#e6edf3' }}>{it.Product?.productName}</div>
+                          <ProductNameSpec product={it.Product} nameStyle={{ fontSize: 13, color: '#e6edf3' }} />
                           <div style={{ textAlign: 'right' }}>
                             <input type="number" min="1"
                               value={cur}
+                              disabled={selectedTrans.status !== 'pending'}
                               onChange={e => setEditQtyMap(p => ({ ...p, [it.id]: e.target.value }))}
                               style={{ width: 70, background: '#0d1117', border: `1px solid ${changed ? '#58a6ff' : '#30363d'}`, borderRadius: 4, color: changed ? '#58a6ff' : '#e6edf3', padding: '4px 6px', fontSize: 14, fontWeight: 700, textAlign: 'right' }} />
                           </div>
@@ -626,7 +941,7 @@ function OutboundContent({ user, showToast, warehouses }) {
                     })}
                   </div>
                   <div style={{ padding: 12, borderTop: '1px solid #21262d' }}>
-                    <button onClick={handleUpdateTransfer} disabled={histLoading}
+                    <button onClick={handleUpdateTransfer} disabled={histLoading || selectedTrans.status !== 'pending'}
                       style={{ width: '100%', padding: 12, background: '#1158b7', border: 'none', color: '#fff', borderRadius: 6, fontWeight: 700, cursor: 'pointer', fontSize: 14 }}>
                       수정 사항 저장
                     </button>

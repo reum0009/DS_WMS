@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { productsAPI, warehousesAPI, requestsAPI, dashboardAPI } from '../../api/api';
+import { productsAPI, warehousesAPI, requestsAPI, dashboardAPI, updateAPI, gwRequestsAPI, noticesAPI } from '../../api/api';
 import './WarehouseHome.css';
 
 // ══════════════════════════════════════════════════════════════════
@@ -78,6 +78,26 @@ function useBarcodeScanner(onScan, enabled = true) {
   }, [enabled, onScan]);
 }
 
+function countRequestStatuses(localRows, gwRows, warehouseId) {
+  const byKey = new Map();
+  [...(localRows || []), ...(gwRows || [])].forEach(row => {
+    const reqNo = String(row?.requestNumber || '').trim();
+    const key = reqNo ? `REQ:${reqNo}` : `ID:${row?.id || ''}`;
+    const prev = byKey.get(key);
+    if (!prev || (row?.isGw && !prev?.isGw)) byKey.set(key, row);
+  });
+
+  const rows = Array.from(byKey.values());
+  const isMyWarehouse = (row) => (
+    !warehouseId || !row?.warehouseId || Number(row.warehouseId) === Number(warehouseId)
+  );
+
+  return {
+    approved: rows.filter(row => row.status === 'approved' && isMyWarehouse(row)).length,
+    pending: rows.filter(row => row.status === 'pending' && isMyWarehouse(row)).length,
+  };
+}
+
 // ── DS 로고 SVG (인라인) ──────────────────────────────────────────
 const DSLogo = ({ size = 52 }) => (
   <svg width={size} height={size} viewBox="0 0 60 60" xmlns="http://www.w3.org/2000/svg" className="ds-logo-svg">
@@ -114,6 +134,12 @@ const DSLogo = ({ size = 52 }) => (
   </svg>
 );
 
+// ── 명령 바코드 (입고/출고 자동 선택) ─────────────────────────────
+const COMMAND_BARCODES = {
+  W99999: 'inbound',
+  W99998: 'outbound',
+};
+
 // ── 메뉴 정의 ─────────────────────────────────────────────────────
 const HOME_MENU = [
   { id: 'inbound',          label: '입고',     sub: 'Inbound',          key: 'F1',  icon: '📥', color: '#3fb950', bg: '#0d2616' },
@@ -146,26 +172,123 @@ const CAT_TABS = [
 ];
 
 // ─── 스캔 팝업: 일치 품목 있을 때 ───────────────────────────────
-function ScanMatchPopup({ product, barcode, onInbound, onOutbound, onClose }) {
-  const stockColor = product.currentStock === 0 ? '#f85149' : product.currentStock <= (product.safetyStock || 0) ? '#e3b341' : '#3fb950';
+function ScanMatchPopup({ product, barcode, quantity, error, onQuantityChange, onQtyPadToggle, onInbound, onOutbound, onClose }) {
+  const qty = quantity || 1;
+  const [showPad, setShowPad] = useState(false);
+  const [padBuf, setPadBuf] = useState(String(qty));
+
+  // 외부(스캔)에서 수량이 바뀌면 표시 동기화 (키패드 닫혀있을 때만)
+  useEffect(() => {
+    if (!showPad) setPadBuf(String(quantity || 1));
+  }, [quantity, showPad]);
+
+  const openPad = () => {
+    setPadBuf(String(qty));
+    setShowPad(true);
+    onQtyPadToggle?.(true);
+  };
+  const closePad = () => {
+    setShowPad(false);
+    onQtyPadToggle?.(false);
+  };
+
+  const pressPad = (k) => {
+    if (k === 'C') setPadBuf('');
+    else if (k === '←') setPadBuf(p => p.slice(0, -1));
+    else setPadBuf(p => (!p || p === '0') ? k : p + k);
+  };
+
+  // 키보드 핸들러 (capture — ESC/숫자/Enter를 팝업 내에서 처리)
+  useEffect(() => {
+    const h = (e) => {
+      if (e.key === 'Escape') {
+        e.stopImmediatePropagation();
+        if (showPad) { setShowPad(false); onQtyPadToggle?.(false); }
+        else onClose();
+        return;
+      }
+      if (!showPad) return;
+      if (e.key >= '0' && e.key <= '9') {
+        e.stopImmediatePropagation();
+        const k = e.key;
+        setPadBuf(p => (!p || p === '0') ? k : p + k);
+      } else if (e.key === 'Backspace') {
+        e.stopImmediatePropagation();
+        setPadBuf(p => p.slice(0, -1));
+      } else if (e.key === 'Enter') {
+        e.stopImmediatePropagation();
+        const n = parseInt(padBuf, 10);
+        if (n > 0) onQuantityChange(n);
+        setShowPad(false);
+        onQtyPadToggle?.(false);
+      }
+    };
+    window.addEventListener('keydown', h, true);
+    return () => window.removeEventListener('keydown', h, true);
+  }, [showPad, padBuf, onClose, onQuantityChange, onQtyPadToggle]);
+
+const stockColor = product.currentStock === 0 ? '#f85149' : product.currentStock <= (product.safetyStock || 0) ? '#e3b341' : '#3fb950';
+
   return (
     <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.80)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 3000 }}>
-      <div style={{ background: '#161b22', border: '1px solid #30363d', borderRadius: 12, padding: '28px 32px', width: 420, textAlign: 'center' }}>
+      <div style={{ background: '#161b22', border: '1px solid #30363d', borderRadius: 12, padding: '28px 32px', width: 440, textAlign: 'center' }}>
+
         <div style={{ fontSize: 12, color: '#8b949e', marginBottom: 4, fontFamily: 'monospace' }}>{barcode}</div>
-        <div style={{ fontSize: 20, fontWeight: 700, color: '#e6edf3', marginBottom: 8 }}>{product.productName}</div>
-        <div style={{ fontSize: 28, fontWeight: 700, color: stockColor, marginBottom: 4 }}>
+        <div style={{ marginBottom: 8 }}>
+          <div style={{ fontSize: 20, fontWeight: 700, color: '#e6edf3' }}>{product.productName}</div>
+          {product.specification && <div style={{ color: '#8b949e', fontSize: 12, marginTop: 2 }}>{product.specification}</div>}
+        </div>
+        <div style={{ fontSize: 28, fontWeight: 700, color: stockColor, marginBottom: 2 }}>
           {product.currentStock} <span style={{ fontSize: 14, fontWeight: 400 }}>{product.unit}</span>
         </div>
-        <div style={{ fontSize: 12, color: '#8b949e', marginBottom: 24 }}>현재 재고</div>
-        <div style={{ display: 'flex', gap: 12, justifyContent: 'center', marginBottom: 12 }}>
-          <button onClick={onInbound} style={{ flex: 1, background: '#0d2616', border: '2px solid #3fb950', color: '#3fb950', padding: '14px 0', borderRadius: 8, cursor: 'pointer', fontSize: 16, fontWeight: 700 }}>
-            📥 입고
-          </button>
-          <button onClick={onOutbound} style={{ flex: 1, background: '#2d0d0b', border: '2px solid #f85149', color: '#f85149', padding: '14px 0', borderRadius: 8, cursor: 'pointer', fontSize: 16, fontWeight: 700 }}>
-            📤 출고
-          </button>
-        </div>
-        <button onClick={onClose} style={{ background: 'none', border: 'none', color: '#8b949e', fontSize: 13, cursor: 'pointer' }}>취소 (ESC)</button>
+        <div style={{ fontSize: 12, color: '#8b949e', marginBottom: 16 }}>현재 재고</div>
+        {error && (
+          <div style={{ background: '#2d0d0b', border: '1px solid #f85149', color: '#f85149', borderRadius: 8, padding: '8px 10px', fontSize: 13, fontWeight: 800, marginBottom: 12 }}>
+            {error}
+          </div>
+        )}
+
+        {showPad ? (
+          /* ── 인라인 수량 키패드 ─────────────────────────────── */
+          <>
+            <div style={{ background: '#0d1117', border: '2px solid #58a6ff', borderRadius: 10, padding: '12px 16px', marginBottom: 10, fontSize: 40, fontWeight: 900, color: '#58a6ff', fontFamily: 'monospace', textAlign: 'right' }}>
+              {padBuf || '0'}
+            </div>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 6, marginBottom: 8 }}>
+              {['7','8','9','4','5','6','1','2','3','C','0','←'].map(k => (
+                <button key={k} onClick={() => pressPad(k)} style={{ padding: '14px 0', fontSize: 18, fontWeight: 700, borderRadius: 8, cursor: 'pointer', border: '1px solid #30363d', background: '#1c2128', color: '#e6edf3' }}>{k}</button>
+              ))}
+            </div>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
+              <button onClick={closePad} style={{ padding: '12px', fontSize: 14, background: 'none', border: '1px solid #30363d', color: '#8b949e', borderRadius: 8, cursor: 'pointer' }}>취소</button>
+              <button onClick={() => { const n = parseInt(padBuf, 10); if (n > 0) onQuantityChange(n); closePad(); }}
+                style={{ padding: '12px', fontSize: 14, fontWeight: 700, background: '#0a1f40', border: '2px solid #58a6ff', color: '#58a6ff', borderRadius: 8, cursor: 'pointer' }}>확인</button>
+            </div>
+          </>
+        ) : (
+          /* ── 수량 표시 + 입출고 버튼 ────────────────────────── */
+          <>
+            {/* 클릭하면 키패드 열림 */}
+            <div onClick={openPad} title="클릭하여 수량 직접 입력"
+              style={{ background: '#0a1f40', border: '2px solid #58a6ff', borderRadius: 10, padding: '10px 20px', marginBottom: 6, display: 'inline-block', minWidth: 140, cursor: 'pointer' }}>
+              <div style={{ fontSize: 12, color: '#58a6ff', marginBottom: 2 }}>입출고 수량 (클릭 시 수정)</div>
+              <div style={{ fontSize: 36, fontWeight: 900, color: '#58a6ff', fontFamily: 'monospace' }}>{qty}</div>
+              <div style={{ fontSize: 11, color: '#444c56' }}>{product.unit}</div>
+            </div>
+            <div style={{ fontSize: 11, color: '#444c56', marginBottom: 18 }}>바코드를 계속 스캔하면 수량이 증가합니다</div>
+
+            <div style={{ display: 'flex', gap: 12, justifyContent: 'center', marginBottom: 12 }}>
+              <button onClick={onInbound} style={{ flex: 1, background: '#0d2616', border: '2px solid #3fb950', color: '#3fb950', padding: '14px 0', borderRadius: 8, cursor: 'pointer', fontSize: 16, fontWeight: 700 }}>
+                📥 입고
+              </button>
+              <button onClick={onOutbound} style={{ flex: 1, background: '#2d0d0b', border: '2px solid #f85149', color: '#f85149', padding: '14px 0', borderRadius: 8, cursor: 'pointer', fontSize: 16, fontWeight: 700 }}>
+                📤 출고
+              </button>
+            </div>
+            <div style={{ fontSize: 11, color: '#444c56', marginBottom: 8 }}>입고바코드 스캔 → 입고 자동선택 · 출고바코드 스캔 → 출고 자동선택</div>
+            <button onClick={onClose} style={{ background: 'none', border: 'none', color: '#8b949e', fontSize: 13, cursor: 'pointer' }}>취소 (ESC)</button>
+          </>
+        )}
       </div>
     </div>
   );
@@ -201,25 +324,71 @@ function ScanNewPopup({ barcode, onRegisterIn, onRegisterOut, onClose }) {
 const WarehouseHome = ({ user, onLogout, onEnterPOS }) => {
 
   const [currentTime, setCurrentTime] = useState('');
-  const [stats,       setStats]       = useState({ inbound: 0, outbound: 0, pending: 0, lowStock: 0, empty: 0, total: 0 });
+  const [stats,       setStats]       = useState({ inbound: 0, outbound: 0, pending: 0, approvalPending: 0, requestTotal: 0, lowStock: 0, empty: 0, total: 0 });
   const [warehouses,  setWarehouses]  = useState([]);
   const [products,    setProducts]    = useState([]);
-  // eslint-disable-next-line no-unused-vars
-  const [notices,     setNotices]     = useState([
-    { id: 1, text: '오늘 14:00 정기 재고실사가 예정되어 있습니다.', type: 'info' },
-    { id: 2, text: '소모품 A4용지(80g) 재고 부족 — 즉시 발주 필요', type: 'warn' },
-  ]);
+  const [appVersion,  setAppVersion]  = useState('v-');
+  const [notices,     setNotices]     = useState([]);
   const [catTab,      setCatTab]      = useState('all');
   const [loading,     setLoading]     = useState(false);
   const [leftCollapsed, setLeftCollapsed] = useState(false);
 
   // ── 스캐너 팝업 상태 ──────────────────────────────────────────
-  const [scanPopup, setScanPopup] = useState(null); // null | { type: 'match'|'new', product?, barcode }
+  const [scanPopup, setScanPopup] = useState(null); // null | { type: 'match'|'new', product?, barcode, quantity? }
+  const [scanPopupError, setScanPopupError] = useState('');
+
+  // 팝업 상태를 ref로 추적 (handleScan deps에 추가하지 않고 읽기 위해)
+  const scanPopupRef = useRef(null);
+  useEffect(() => { scanPopupRef.current = scanPopup; }, [scanPopup]);
+
+  const setMatchPopupError = useCallback((message) => {
+    setScanPopupError(message);
+    setTimeout(() => setScanPopupError(''), 2500);
+  }, []);
+
+  const canOutboundFromPopup = useCallback((popup) => {
+    if (!popup?.product) return false;
+    const qty = Number(popup.quantity || 1);
+    const stock = Number(popup.product.currentStock || 0);
+    if (qty > stock) {
+      setMatchPopupError(`재고 부족 — 현재 ${stock}${popup.product.unit || '개'}, 요청 ${qty}${popup.product.unit || '개'}`);
+      return false;
+    }
+    return true;
+  }, [setMatchPopupError]);
+
+  // 수량 키패드 열림 여부 (true일 때 스캐너 훅 비활성화)
+  const [qtyPadOpen, setQtyPadOpen] = useState(false);
+  const qtyPadOpenRef = useRef(false);
+  useEffect(() => { qtyPadOpenRef.current = qtyPadOpen; }, [qtyPadOpen]);
 
   // ── 스캐너 감지 콜백 ──────────────────────────────────────────
   const handleScan = useCallback((code) => {
+    if (qtyPadOpenRef.current) return; // 수량 키패드 열려있으면 스캔 무시
+
     const q = String(code || '').toLowerCase().trim();
     if (!q) return;
+
+    const rawCode = String(code || '').trim().toUpperCase();
+    const current = scanPopupRef.current;
+
+    // 명령 바코드 처리 (W99999=입고, W99998=출고)
+    const commandTarget = COMMAND_BARCODES[rawCode];
+    if (commandTarget) {
+      if (current?.type === 'match') {
+        if (commandTarget === 'outbound' && !canOutboundFromPopup(current)) return;
+        // 팝업 열린 상태에서 명령 바코드 → 해당 방향으로 자동 이동
+        const { product, quantity } = current;
+        setScanPopup(null);
+        setScanPopupError('');
+        onEnterPOS(commandTarget, { ...product, _qty: quantity || 1 });
+      } else {
+        setScanPopup(null);
+        setScanPopupError('');
+        onEnterPOS(commandTarget);
+      }
+      return;
+    }
 
     const found = products.find(p => {
       const b = String(p.barcode || '').toLowerCase().trim();
@@ -228,15 +397,39 @@ const WarehouseHome = ({ user, onLogout, onEnterPOS }) => {
       return b === q || pc === q || hasCodes;
     });
 
+    if (current?.type === 'match') {
+      // 팝업이 이미 열린 상태에서 같은 상품 스캔 → 수량 증가
+      if (found && found.id === current.product?.id) {
+        const nextQty = (current.quantity || 1) + 1;
+        const stock = Number(current.product?.currentStock || 0);
+        if (nextQty > stock) {
+          setMatchPopupError(`재고 부족 — 현재 ${stock}${current.product?.unit || '개'}까지만 출고할 수 있습니다`);
+          return;
+        }
+        setScanPopup(prev => ({ ...prev, quantity: nextQty }));
+        return;
+      }
+      // 다른 상품 스캔 → 팝업 교체
+      if (found) {
+        setScanPopupError('');
+        setScanPopup({ type: 'match', product: found, barcode: code, quantity: 1 });
+        return;
+      }
+      // 미등록 바코드 → 무시
+      return;
+    }
+
     if (found) {
-      setScanPopup({ type: 'match', product: found, barcode: code });
+      setScanPopupError('');
+      setScanPopup({ type: 'match', product: found, barcode: code, quantity: 1 });
     } else {
+      setScanPopupError('');
       setScanPopup({ type: 'new', barcode: code });
     }
-  }, [products]);
+  }, [products, onEnterPOS, canOutboundFromPopup, setMatchPopupError]);
 
-  // 스캐너 훅 연결 (팝업이 열려 있을 때는 비활성)
-  useBarcodeScanner(handleScan, !scanPopup);
+  // 스캐너 훅 연결 (수량 키패드 열려있을 때는 비활성 — 바코드 digit이 키패드에 들어가는 것 방지)
+  useBarcodeScanner(handleScan, !qtyPadOpen);
 
   // ESC로 팝업 닫기
   useEffect(() => {
@@ -260,20 +453,28 @@ const WarehouseHome = ({ user, onLogout, onEnterPOS }) => {
   const loadData = useCallback(async (silent = false) => {
     try {
       if (!silent) setLoading(true);
-      const [pRes, wRes, rRes, sRes] = await Promise.all([
-        productsAPI.getAll(),
+      const warehouseId = user?.warehouseId ? Number(user.warehouseId) : null;
+      const scopeParams = warehouseId ? { warehouseId } : undefined;
+      const [pRes, wRes, rRes, gwRes, sRes, vRes, nRes] = await Promise.all([
+        productsAPI.getAll(scopeParams),
         warehousesAPI.getAll(),
         requestsAPI.getAll(),
-        dashboardAPI.getStats(),
+        gwRequestsAPI.getAll().catch(() => ({ data: [] })),
+        dashboardAPI.getStats(scopeParams),
+        updateAPI.check().catch(() => ({ data: null })),
+        noticesAPI.getActive(scopeParams).catch(() => ({ data: [] })),
       ]);
       const products  = pRes.data || [];
       const wList     = wRes.data || [];
       // eslint-disable-next-line no-unused-vars
       const requests  = rRes.data || [];
+      const requestCounts = countRequestStatuses(requests, gwRes.data || [], warehouseId);
       const backendStats = sRes.data || {};
       
       setProducts(products);
       setWarehouses(wList);
+      setNotices(nRes.data || []);
+      if (vRes.data?.version) setAppVersion(vRes.data.version);
 
       const overview = backendStats.overview || {};
       const inventory = backendStats.inventory || {};
@@ -281,7 +482,9 @@ const WarehouseHome = ({ user, onLogout, onEnterPOS }) => {
       setStats({
         inbound: overview.todayInbound || 0,
         outbound: overview.todayOutbound || 0,
-        pending: overview.pendingRequests || 0,
+        pending: requestCounts.approved,
+        approvalPending: requestCounts.pending,
+        requestTotal: requestCounts.approved + requestCounts.pending,
         lowStock: inventory.lowStockProducts || 0,
         empty: inventory.outOfStockProducts || 0,
         total: inventory.totalProducts || products.length
@@ -291,7 +494,7 @@ const WarehouseHome = ({ user, onLogout, onEnterPOS }) => {
     } finally {
       if (!silent) setLoading(false);
     }
-  }, []);
+  }, [user?.warehouseId]);
 
   useEffect(() => {
     loadData();
@@ -343,7 +546,10 @@ const WarehouseHome = ({ user, onLogout, onEnterPOS }) => {
     return () => window.removeEventListener('keydown', onKey);
   }, [handleMenu]);
 
-  const warehouseName = warehouses[0]?.warehouseName || '제1창고';
+  const myWarehouse = user?.warehouseId
+    ? warehouses.find(w => Number(w.id) === Number(user.warehouseId))
+    : warehouses[0];
+  const warehouseName = myWarehouse?.warehouseName || user?.warehouse || '제1창고';
 
   return (
     <div className="home-root">
@@ -395,13 +601,6 @@ const WarehouseHome = ({ user, onLogout, onEnterPOS }) => {
             )}
           </button>
 
-          {/* DS 로고 + 시스템 명칭 */}
-          <div className="home-left__brand">
-            <DSLogo size={64} />
-            <div className="home-left__brand-name">DS WMS</div>
-            <div className="home-left__brand-sub">v1.0 · {warehouseName}</div>
-          </div>
-
           {/* 오늘의 현황 */}
           <div className="home-left__section">
             <div className="home-left__section-title">📋 오늘의 현황</div>
@@ -432,6 +631,12 @@ const WarehouseHome = ({ user, onLogout, onEnterPOS }) => {
                 </span>
               </div>
               <div className="home-info-row">
+                <span className="home-info-row__lbl">승인 대기</span>
+                <span className="home-info-row__val" style={{ color: stats.approvalPending > 0 ? '#58a6ff' : '#3fb950' }}>
+                  {stats.approvalPending}
+                </span>
+              </div>
+              <div className="home-info-row">
                 <span className="home-info-row__lbl">저재고 품목</span>
                 <span className="home-info-row__val" style={{ color: stats.lowStock > 0 ? '#e3b341' : '#3fb950' }}>
                   {stats.lowStock}
@@ -450,10 +655,12 @@ const WarehouseHome = ({ user, onLogout, onEnterPOS }) => {
           <div className="home-left__section home-left__section--notices">
             <div className="home-left__section-title">📢 공지사항</div>
             <div className="home-notices">
-              {notices.map(n => (
-                <div key={n.id} className={`home-notice home-notice--${n.type}`}>
+              {notices.length === 0 ? (
+                <div style={{ color: '#444c56', fontSize: 13, fontWeight: 700, padding: '12px 4px' }}>공지사항이 없습니다.</div>
+              ) : notices.map(n => (
+                <div key={n.id} className="home-notice home-notice--info">
                   <span className="home-notice__dot" />
-                  <span className="home-notice__text">{n.text}</span>
+                  <span className="home-notice__text">{n.content}</span>
                 </div>
               ))}
             </div>
@@ -478,10 +685,10 @@ const WarehouseHome = ({ user, onLogout, onEnterPOS }) => {
               <span className="home-center__banner-main">창고 운영 메인 메뉴</span>
               <span className="home-center__banner-sub">기능을 선택하거나 단축키를 누르세요</span>
             </div>
-            {stats.pending > 0 && (
+            {stats.requestTotal > 0 && (
               <div className="home-center__pending-alert">
-                <span className="home-pending-badge">{stats.pending}</span>
-                <span>출고 대기 요청</span>
+                <span className="home-pending-badge">{stats.requestTotal}</span>
+                <span>요청 처리 대기</span>
               </div>
             )}
           </div>
@@ -504,8 +711,8 @@ const WarehouseHome = ({ user, onLogout, onEnterPOS }) => {
                 {item.id === 'low-stock' && stats.lowStock > 0 && (
                   <span className="home-menu-block__badge">{stats.lowStock}</span>
                 )}
-                {item.id === 'req-outbound' && stats.pending > 0 && (
-                  <span className="home-menu-block__badge">{stats.pending}</span>
+                {item.id === 'req-outbound' && stats.requestTotal > 0 && (
+                  <span className="home-menu-block__badge">{stats.requestTotal}</span>
                 )}
               </button>
             ))}
@@ -515,11 +722,8 @@ const WarehouseHome = ({ user, onLogout, onEnterPOS }) => {
           <div className="home-status-legend">
             <span className="home-legend-title">요청 상태:</span>
             {[
-              ['신청', '#8b949e'],
-              ['출고대기', '#f0883e'],
-              ['부분출고', '#e3b341'],
-              ['출고완료', '#3fb950'],
-              ['취소', '#f85149'],
+              [`출고대기 ${stats.pending}`, '#f0883e'],
+              [`승인대기 ${stats.approvalPending}`, '#58a6ff'],
             ].map(([label, color]) => (
               <span key={label} className="home-legend-item" style={{ '--lc': color }}>
                 <span className="home-legend-dot" />
@@ -566,7 +770,7 @@ const WarehouseHome = ({ user, onLogout, onEnterPOS }) => {
             </div>
             <div className="home-sys-row">
               <span className="home-sys-row__lbl">버전</span>
-              <span className="home-sys-row__val home-sys-row__val--muted">v1.0.0</span>
+              <span className="home-sys-row__val home-sys-row__val--muted">{appVersion}</span>
             </div>
             <div className="home-sys-row">
               <span className="home-sys-row__lbl">역할</span>
@@ -613,7 +817,7 @@ const WarehouseHome = ({ user, onLogout, onEnterPOS }) => {
         ))}
         <span className="home-bottom__spacer" />
         <span style={{ color: '#444c56', fontSize: 12 }}>바코드 스캔 대기 중</span>
-        <span className="home-bottom__ver">WMS v1.0 · DS</span>
+        <span className="home-bottom__ver">WMS {appVersion} · DS</span>
       </div>
 
       {/* ═══ 스캐너 팝업 ════════════════════════════════════════ */}
@@ -621,9 +825,25 @@ const WarehouseHome = ({ user, onLogout, onEnterPOS }) => {
         <ScanMatchPopup
           product={scanPopup.product}
           barcode={scanPopup.barcode}
-          onInbound={() => { setScanPopup(null); onEnterPOS('inbound', scanPopup.product); }}
-          onOutbound={() => { setScanPopup(null); onEnterPOS('outbound', scanPopup.product); }}
-          onClose={() => setScanPopup(null)}
+          quantity={scanPopup.quantity || 1}
+          error={scanPopupError}
+          onQuantityChange={(n) => {
+            const stock = Number(scanPopup.product?.currentStock || 0);
+            if (Number(n) > stock) {
+              setMatchPopupError(`재고 부족 — 현재 ${stock}${scanPopup.product?.unit || '개'}까지만 출고할 수 있습니다`);
+              return;
+            }
+            setScanPopup(prev => ({ ...prev, quantity: n }));
+          }}
+          onQtyPadToggle={(open) => { setQtyPadOpen(open); }}
+          onInbound={() => { setScanPopup(null); onEnterPOS('inbound', { ...scanPopup.product, _qty: scanPopup.quantity || 1 }); }}
+          onOutbound={() => {
+            if (!canOutboundFromPopup(scanPopup)) return;
+            setScanPopup(null);
+            setScanPopupError('');
+            onEnterPOS('outbound', { ...scanPopup.product, _qty: scanPopup.quantity || 1 });
+          }}
+          onClose={() => { setScanPopup(null); setScanPopupError(''); }}
         />
       )}
       {scanPopup?.type === 'new' && (

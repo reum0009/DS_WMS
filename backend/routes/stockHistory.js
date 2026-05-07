@@ -11,7 +11,7 @@ router.get('/product/:productId', auth, roleAuth(['admin', 'warehouse']), async 
       where: { productId: req.params.productId },
       include: [
         { model: User, attributes: ['name', 'email'] },
-        { model: Product, attributes: ['productCode', 'productName'] }
+        { model: Product, attributes: ['productCode', 'productName', 'specification'] }
       ],
       order: [['createdAt', 'DESC']],
       limit: 100
@@ -44,7 +44,7 @@ router.get('/', auth, roleAuth(['admin']), async (req, res) => {
       where,
       include: [
         { model: User, attributes: ['name', 'email', 'role'] },
-        { model: Product, attributes: ['productCode', 'productName', 'category'] }
+        { model: Product, attributes: ['productCode', 'productName', 'specification', 'category'] }
       ],
       order: [['createdAt', 'DESC']],
       limit: 500
@@ -63,7 +63,7 @@ router.get('/reference/:reference', auth, roleAuth(['admin', 'warehouse']), asyn
       where: { reference: req.params.reference },
       include: [
         { model: User, attributes: ['name', 'email'] },
-        { model: Product, attributes: ['productCode', 'productName'] }
+        { model: Product, attributes: ['productCode', 'productName', 'specification'] }
       ],
       order: [['createdAt', 'DESC']]
     });

@@ -23,10 +23,27 @@ function stockSt(p) {
   return           { label: '정상', color: GRN };
 }
 
+function ProductNameSpec({ product, nameStyle = {}, specStyle = {} }) {
+  return (
+    <div>
+      <div style={nameStyle}>{product?.productName || product?.Product?.productName || product?.product?.productName || '—'}</div>
+      {(product?.specification || product?.Product?.specification || product?.product?.specification) && (
+        <div style={{ color: TX2, fontSize: 11, marginTop: 2, ...specStyle }}>
+          {product?.specification || product?.Product?.specification || product?.product?.specification}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── 바코드 스캐너 감지 훅 ─────────────────────────────────────────────
 const SCANNER_SPEED_MS = 50;
 const SCANNER_MIN_LEN  = 3;
 const IDLE_RESET_MS    = 280;
+const COMMAND_BARCODES = {
+  W99999: { screen: 'inbound', label: '입고바코드', type: 'inbound' },
+  W99998: { screen: 'outbound', label: '출고바코드', type: 'outbound' },
+};
 
 function useBarcodeScanner(onScan, enabled=true) {
   const buf=useRef([]), timer=useRef(null);
@@ -39,6 +56,7 @@ function useBarcodeScanner(onScan, enabled=true) {
       if(tag==='INPUT'&&el?.dataset?.barcodeManual!=='true') return;
       if(e.ctrlKey||e.altKey||e.metaKey) return;
       if(e.key.length>1&&e.key!=='Enter') return;
+      e.stopImmediatePropagation();
       if(e.key==='Enter'){
         const b=buf.current; buf.current=[]; clearTimeout(timer.current);
         if(b.length<SCANNER_MIN_LEN) return;
@@ -76,6 +94,10 @@ function RightBtn({ icon, label, sub, color, onClick, disabled }) {
 // ── 가상 숫자 키패드 컴포넌트 ────────────────────────────────────
 function NumKeypad({ value, onChange, onClose, label }) {
   const [buf, setBuf] = useState(value || '');
+
+  useEffect(() => {
+    setBuf(value || '');
+  }, [value]);
   
   const press = (k) => {
     if (k === 'C') setBuf('');
@@ -283,7 +305,7 @@ function EditModal({ warehouses, editSearch, setEditSearch, onClose, onRefreshMa
         const res = await outboundAPI.getSession(initialReference);
         setDetailItems(res.data || []);
         const qmap = {};
-        (res.data || []).forEach(it => { qmap[it.id] = it.quantity; });
+        (res.data || []).forEach(it => { qmap[it.id] = Number(it.quantity); });
         setEditQtyMap(qmap);
       } catch {
         showToast('상세 로드 실패', 'error');
@@ -296,16 +318,19 @@ function EditModal({ warehouses, editSearch, setEditSearch, onClose, onRefreshMa
     try {
       const res = await outboundAPI.getSession(ref);
       setDetailItems(res.data || []);
-      const qmap = {}; res.data.forEach(it => qmap[it.id] = it.quantity); setEditQtyMap(qmap);
+      const qmap = {}; res.data.forEach(it => { qmap[it.id] = Number(it.quantity); }); setEditQtyMap(qmap);
     } catch { showToast('로드 실패', 'error'); }
   };
 
   const saveItem = async (item) => {
-    const n = parseInt(editQtyMap[item.id]);
+    const n = parseInt(editQtyMap[item.id], 10);
+    if (!n || n <= 0) { showToast('수량은 1 이상이어야 합니다', 'error'); return; }
     try {
       await outboundAPI.updateItem(item.reference, item.id, { quantity: n });
-      showToast('수정 완료'); onRefreshMaster(); selectRef(item.reference);
-    } catch (e) { showToast(e.response?.data?.error || '실패', 'error'); }
+      showToast('수정 완료');
+      onRefreshMaster();
+      await selectRef(item.reference);
+    } catch (e) { showToast(e.response?.data?.error || '수정 실패', 'error'); }
   };
 
   const deleteDetailItem = async (item) => {
@@ -318,13 +343,17 @@ function EditModal({ warehouses, editSearch, setEditSearch, onClose, onRefreshMa
   const detailTotalQty = detailItems.reduce((s, it) => s + it.quantity, 0);
   const detailTotalAmt = detailItems.reduce((s, it) => s + (it.Product?.unitPrice || 0) * it.quantity, 0);
   const popupScale = 1.3 / (uiScale || 1);
+  // fixed + 부모 transform 환경에서 vh는 실제 뷰포트 기준이므로 % 사용
+  // 자신의 scale(popupScale) 적용 후 90% 이내로 보정
+  const modalH = Math.min(90, Math.round(90 / popupScale));
+  const modalW = Math.min(90, Math.round(90 / popupScale));
 
   return (
     <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.82)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1300 }}
       onClick={e => { if (editKorPad || keypadTarget || calPicker || confirmAction) return; if (e.target === e.currentTarget) onClose(); }}>
-      
+
       {toast && <div style={{ position:'fixed', top:20, left:'50%', transform:'translateX(-50%)', zIndex:9999, background:BG1, border:`1px solid ${BLU}`, color:TX, padding:'10px 22px', borderRadius:8, fontSize:13, fontWeight:600 }}>{toast.msg}</div>}
-      
+
       {confirmAction && (
         <div style={{ position:'fixed', inset:0, background:'rgba(0,0,0,0.6)', display:'flex', alignItems:'center', justifyContent:'center', zIndex:9998 }}>
           <div style={{ background:BG1, border:`1px solid ${RED}`, borderRadius:10, padding:24, width:400, boxShadow: '0 8px 30px rgba(0,0,0,0.5)' }}>
@@ -338,11 +367,11 @@ function EditModal({ warehouses, editSearch, setEditSearch, onClose, onRefreshMa
         </div>
       )}
 
-      {keypadTarget && <NumKeypad label={keypadTarget.label} value={String(editQtyMap[keypadTarget.id])} onChange={v=>setEditQtyMap(p=>({...p, [keypadTarget.id]:v}))} onClose={()=>setKeypadTarget(null)} />}
+      {keypadTarget && <NumKeypad label={keypadTarget.label} value={String(editQtyMap[keypadTarget.id])} onChange={v=>setEditQtyMap(p=>({...p, [keypadTarget.id]:Number(v)||0}))} onClose={()=>setKeypadTarget(null)} />}
       {calPicker && <CalendarPicker label={calPicker.label} value={editSearch[calPicker.field]} onChange={v=>setEditSearch(p=>({...p, [calPicker.field]:v}))} onClose={()=>setCalPicker(null)} />}
       {editKorPad && <KoreanKeypad label={editKorPad.label} value={filterProduct} onChange={v=>setFilterProduct(v)} onClose={()=>setEditKorPad(null)} />}
 
-      <div onClick={e => e.stopPropagation()} style={{ background: BG1, border: `1px solid ${BD}`, borderRadius: 12, width: '90vw', maxWidth: 1100, height: '82vh', display: 'flex', flexDirection: 'column', overflow: 'hidden', boxShadow: '0 20px 60px rgba(0,0,0,0.6)', transform: `scale(${popupScale})`, transformOrigin: 'center center' }}>
+      <div onClick={e => e.stopPropagation()} style={{ background: BG1, border: `1px solid ${BD}`, borderRadius: 12, width: `${modalW}%`, maxWidth: 1100, height: `${modalH}%`, display: 'flex', flexDirection: 'column', overflow: 'hidden', boxShadow: '0 20px 60px rgba(0,0,0,0.6)', transform: `scale(${popupScale})`, transformOrigin: 'center center' }}>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '14px 20px', background: 'linear-gradient(135deg, #1c2128 0%, #21262d 100%)', borderBottom: `2px solid ${RED}55`, flexShrink: 0 }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
             <span style={{ fontSize: 16, fontWeight: 700, color: TX }}>🔍 출고 수정</span>
@@ -390,7 +419,7 @@ function EditModal({ warehouses, editSearch, setEditSearch, onClose, onRefreshMa
                     borderBottom: `1px solid ${BD2}`,
                     borderLeft: selectedRef === s.reference ? `3px solid ${RED}` : '3px solid transparent',
                   }}>
-                  <div style={{ padding: '12px 4px', fontSize: 12, color: TX2 }}>{i + 1}</div>
+                  <div style={{ padding: '12px 4px', fontSize: 12, color: TX2 }}>{filteredSessions.length - i}</div>
                   <div style={{ padding: '10px 4px' }}>
                     <div style={{ fontSize: 12, color: selectedRef === s.reference ? RED : TX, fontFamily: 'monospace', fontWeight: 600 }}>{s.reference}</div>
                     <div style={{ fontSize: 10, color: TX2, marginTop: 2 }}>{s.createdAt.slice(0, 16).replace('T', ' ')} · {s.userName}</div>
@@ -436,20 +465,20 @@ function EditModal({ warehouses, editSearch, setEditSearch, onClose, onRefreshMa
 
                 <div style={{ flex: 1, overflowY: 'auto' }}>
                   {detailItems.map((it, i) => {
-                    const curQty = editQtyMap[it.id];
-                    const changed = curQty !== it.quantity;
+                    const curQty = Number(editQtyMap[it.id]) || 0;
+                    const changed = curQty !== Number(it.quantity);
                     return (
                       <div key={it.id} style={{ display: 'grid', gridTemplateColumns: '40px 1fr 80px 100px 120px', padding: '4px 10px', borderBottom: `1px solid ${BD2}`, alignItems: 'center', background: i % 2 === 0 ? BG0 : '#111720' }}>
                         <div style={{ fontSize: 12, color: TX2 }}>{i + 1}</div>
                         <div>
-                          <div style={{ fontSize: 13, fontWeight: 600 }}>{it.Product?.productName}</div>
+                          <ProductNameSpec product={it.Product} nameStyle={{ fontSize: 13, fontWeight: 600 }} />
                           <div style={{ fontSize: 10, color: TX2, fontFamily: 'monospace' }}>{it.Product?.productCode}</div>
                         </div>
                         <div style={{ textAlign: 'right' }}>
                           <button onClick={() => setKeypadTarget({ id: it.id, label: it.Product?.productName })}
                             style={{ background: BG0, border: `1px solid ${changed ? BLU : BD}`, color: changed ? BLU : TX, borderRadius: 4, padding: '5px 10px', fontFamily: 'monospace', cursor: 'pointer', fontSize: 14, fontWeight: 700 }}>{curQty}</button>
                         </div>
-                        <div style={{ textAlign: 'right', fontSize: 13, fontWeight: 600 }}>₩{(it.Product?.unitPrice * curQty).toLocaleString()}</div>
+                        <div style={{ textAlign: 'right', fontSize: 13, fontWeight: 600 }}>₩{((it.Product?.unitPrice || 0) * curQty).toLocaleString()}</div>
                         <div style={{ display: 'flex', gap: 5, justifyContent: 'center' }}>
                           <button onClick={() => saveItem(it)} disabled={!changed} style={{ padding: '5px 12px', background: changed ? GRN : BG3, color: '#fff', border: 'none', borderRadius: 4, cursor: changed ? 'pointer' : 'default', fontSize: 11, fontWeight: 700 }}>저장</button>
                           <button onClick={() => setConfirmAction({ message: `"${it.Product?.productName}" 출고를 취소하시겠습니까?\n취소된 수량만큼 재고가 복구됩니다.`, payload: it })} style={{ padding: '5px 12px', background: RED, color: '#fff', border: 'none', borderRadius: 4, cursor: 'pointer', fontSize: 11, fontWeight: 700 }}>취소</button>
@@ -589,7 +618,7 @@ function TransferManagementModal({ user, items, setItems, warehouses, onClose, o
                 <div style={{ maxHeight: 200, overflowY: 'auto' }}>
                   {items.map(it => (
                     <div key={it.productId} style={{ display: 'flex', justifyContent: 'space-between', padding: '6px 0', borderBottom: `1px solid ${BD2}`, fontSize: 13 }}>
-                      <span>{it.product.productName}</span>
+                      <ProductNameSpec product={it.product} />
                       <span style={{ color: ORG, fontWeight: 700 }}>{it.quantity} {it.product.unit}</span>
                     </div>
                   ))}
@@ -633,7 +662,7 @@ function TransferManagementModal({ user, items, setItems, warehouses, onClose, o
                         const chg = Number(cur) !== it.quantity;
                         return (
                           <div key={it.id} style={{ display: 'grid', gridTemplateColumns: '1fr 80px 80px', padding: '10px 15px', borderBottom: `1px solid ${BD2}`, alignItems: 'center' }}>
-                            <div style={{ fontSize: 13 }}>{it.Product?.productName}</div>
+                            <ProductNameSpec product={it.Product} nameStyle={{ fontSize: 13 }} />
                             <button onClick={() => setKeypadTarget({ id: it.id, label: it.Product?.productName })}
                               style={{ background: BG1, border: `1px solid ${chg ? BLU : BD}`, color: chg ? BLU : TX, padding: 5, borderRadius: 4, fontFamily: 'monospace' }}>{cur}</button>
                             <div style={{ fontSize: 11, color: TX2, textAlign: 'right' }}>{it.Product?.unit}</div>
@@ -657,8 +686,109 @@ function TransferManagementModal({ user, items, setItems, warehouses, onClose, o
   );
 }
 
+// ── 출고화면 전용 스캔 팝업 ───────────────────────────────────────
+function ScanOutboundPopup({ product, quantity, onQuantityChange, onQtyPadToggle, onOutbound, onClose }) {
+  const qty = quantity || 1;
+  const [showPad, setShowPad] = React.useState(false);
+  const [padBuf, setPadBuf] = React.useState(String(qty));
+
+  React.useEffect(() => {
+    if (!showPad) setPadBuf(String(quantity || 1));
+  }, [quantity, showPad]);
+
+  const openPad  = () => { setPadBuf(String(qty)); setShowPad(true);  onQtyPadToggle?.(true);  };
+  const closePad = () => { setShowPad(false); onQtyPadToggle?.(false); };
+
+  const pressPad = (k) => {
+    if (k === 'C') setPadBuf('');
+    else if (k === '←') setPadBuf(p => p.slice(0, -1));
+    else setPadBuf(p => (!p || p === '0') ? k : p + k);
+  };
+
+  React.useEffect(() => {
+    const h = (e) => {
+      if (e.key === 'Escape') {
+        e.stopImmediatePropagation();
+        if (showPad) { setShowPad(false); onQtyPadToggle?.(false); }
+        else onClose();
+        return;
+      }
+      if (!showPad) return;
+      if (e.key >= '0' && e.key <= '9') {
+        e.stopImmediatePropagation();
+        const k = e.key;
+        setPadBuf(p => (!p || p === '0') ? k : p + k);
+      } else if (e.key === 'Backspace') {
+        e.stopImmediatePropagation();
+        setPadBuf(p => p.slice(0, -1));
+      } else if (e.key === 'Enter') {
+        e.stopImmediatePropagation();
+        const n = parseInt(padBuf, 10);
+        if (n > 0) onQuantityChange(n);
+        setShowPad(false);
+        onQtyPadToggle?.(false);
+      }
+    };
+    window.addEventListener('keydown', h, true);
+    return () => window.removeEventListener('keydown', h, true);
+  }, [showPad, padBuf, onClose, onQuantityChange, onQtyPadToggle]);
+
+  const stockColor = product.currentStock === 0 ? RED
+    : product.currentStock <= (product.safetyStock || 0) ? YLW : GRN;
+
+  return (
+    <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.80)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 3000 }}>
+      <div style={{ background: BG1, border: `1px solid ${BD}`, borderRadius: 12, padding: '28px 32px', width: 440, textAlign: 'center' }}>
+        <ProductNameSpec product={product} nameStyle={{ fontSize: 20, fontWeight: 700, color: TX, marginBottom: 4 }} />
+        {product.productCode && (
+          <div style={{ fontSize: 12, color: TX2, marginBottom: 4, fontFamily: 'monospace' }}>{product.productCode}</div>
+        )}
+        <div style={{ fontSize: 28, fontWeight: 700, color: stockColor, marginBottom: 2 }}>
+          {product.currentStock} <span style={{ fontSize: 14, fontWeight: 400 }}>{product.unit}</span>
+        </div>
+        <div style={{ fontSize: 12, color: TX2, marginBottom: 16 }}>현재 재고</div>
+
+        {showPad ? (
+          <>
+            <div style={{ background: BG0, border: `2px solid ${RED}`, borderRadius: 10, padding: '12px 16px', marginBottom: 10, fontSize: 40, fontWeight: 900, color: RED, fontFamily: 'monospace', textAlign: 'right' }}>
+              {padBuf || '0'}
+            </div>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 6, marginBottom: 8 }}>
+              {['7','8','9','4','5','6','1','2','3','C','0','←'].map(k => (
+                <button key={k} onClick={() => pressPad(k)} style={{ padding: '14px 0', fontSize: 18, fontWeight: 700, borderRadius: 8, cursor: 'pointer', border: `1px solid ${BD}`, background: BG2, color: TX }}>{k}</button>
+              ))}
+            </div>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
+              <button onClick={closePad} style={{ padding: '12px', fontSize: 14, background: 'none', border: `1px solid ${BD}`, color: TX2, borderRadius: 8, cursor: 'pointer' }}>취소</button>
+              <button onClick={() => { const n = parseInt(padBuf, 10); if (n > 0) onQuantityChange(n); closePad(); }}
+                style={{ padding: '12px', fontSize: 14, fontWeight: 700, background: '#2d0d0b', border: `2px solid ${RED}`, color: RED, borderRadius: 8, cursor: 'pointer' }}>확인</button>
+            </div>
+          </>
+        ) : (
+          <>
+            <div onClick={openPad} title="클릭하여 수량 직접 입력"
+              style={{ background: '#2d0d0b', border: `2px solid ${RED}`, borderRadius: 10, padding: '10px 20px', marginBottom: 6, display: 'inline-block', minWidth: 140, cursor: 'pointer' }}>
+              <div style={{ fontSize: 12, color: RED, marginBottom: 2 }}>출고 수량 (클릭 시 수정)</div>
+              <div style={{ fontSize: 36, fontWeight: 900, color: RED, fontFamily: 'monospace' }}>{qty}</div>
+              <div style={{ fontSize: 11, color: TX3 }}>{product.unit}</div>
+            </div>
+            <div style={{ fontSize: 11, color: TX3, marginBottom: 18 }}>바코드를 계속 스캔하면 수량이 증가합니다</div>
+            <div style={{ display: 'flex', justifyContent: 'center', marginBottom: 12 }}>
+              <button onClick={onOutbound} style={{ flex: 1, background: '#2d0d0b', border: `2px solid ${RED}`, color: RED, padding: '14px 0', borderRadius: 8, cursor: 'pointer', fontSize: 16, fontWeight: 700 }}>
+                📤 출고 추가
+              </button>
+            </div>
+            <div style={{ fontSize: 11, color: TX3, marginBottom: 8 }}>출고바코드 스캔 → 자동 추가</div>
+            <button onClick={onClose} style={{ background: 'none', border: 'none', color: TX2, fontSize: 13, cursor: 'pointer' }}>취소 (ESC)</button>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
 // ══════════════════════════════════════════════════════════════════
-const WarehouseOutbound = ({user, onGoHome, initialProduct}) => {
+const WarehouseOutbound = ({user, onGoHome, onNavigate, initialProduct}) => {
   const [clock,  setClock]  = useState(formatClock(new Date()));
   const [uiScale, setUiScale] = useState(1);
   const [ref,    setRef]    = useState(makeRef());
@@ -687,6 +817,12 @@ const WarehouseOutbound = ({user, onGoHome, initialProduct}) => {
   const [pendingBarcode, setPendingBarcode] = useState('');
   const [newProdName, setNewProdName] = useState('');
   const manualRef = useRef(null);
+
+  // ── 출고화면 내 바코드 스캔 팝업 ─────────────────────────────
+  const [scanPopup, setScanPopup] = useState(null); // { type:'match', product, quantity }
+  const scanPopupRef = useRef(null);
+  useEffect(() => { scanPopupRef.current = scanPopup; }, [scanPopup]);
+  const [scanPopupQtyPadOpen, setScanPopupQtyPadOpen] = useState(false);
   const blockKorFocus = useRef(false);
 
   const openKorKeypad = (label, value, onConfirm) => {
@@ -721,8 +857,20 @@ const WarehouseOutbound = ({user, onGoHome, initialProduct}) => {
       setDataReady(true);
       if(initialProduct?.id){
         const latest = (resP.data || []).find(p => p.id === initialProduct.id) || initialProduct;
-        if(latest.currentStock > 0) { setScanned(latest); setQtyPad({product:latest, value:'1', label:latest.productName}); }
-        else showToast(`"${latest.productName}" 재고 없음`, 'error');
+        if(initialProduct._qty) {
+          // 바코드로 수량 확정된 경우 → 키패드 생략, 바로 세션에 추가
+          const qty = initialProduct._qty;
+          if(latest.currentStock <= 0) {
+            showToast(`"${latest.productName}" 재고 없음`, 'error');
+          } else {
+            const safeQty = qty > latest.currentStock ? latest.currentStock : qty;
+            if(safeQty < qty) showToast(`재고 ${latest.currentStock}개만 처리 가능`, 'warn');
+            setItems([{ productId: latest.id, product: latest, quantity: safeQty }]);
+          }
+        } else {
+          if(latest.currentStock > 0) { setScanned(latest); setQtyPad({product:latest, value:'1', label:latest.productName}); }
+          else showToast(`"${latest.productName}" 재고 없음`, 'error');
+        }
       }
     } catch (e) {
       const msg = e?.response?.data?.error || e?.response?.data?.message || e?.message || '알 수 없는 오류';
@@ -750,13 +898,66 @@ const WarehouseOutbound = ({user, onGoHome, initialProduct}) => {
   }, [selectedWH]);
   useEffect(() => { outboundAPI.getToday().then(r => setTodayCount(r.data?.sessions || 0)).catch(() => {}); }, []);
 
+  // ── 팝업에서 세션으로 추가 ────────────────────────────────────
+  const addToSessionFromPopup = useCallback((product, quantity) => {
+    const qty = quantity;
+    if (qty > product.currentStock) { showToast('재고 부족', 'error'); return; }
+    setItems(prev => {
+      const ex = prev.findIndex(i => i.productId === product.id);
+      if (ex >= 0) {
+        const nq = prev[ex].quantity + qty;
+        if (nq > product.currentStock) { showToast('재고 초과', 'error'); return prev; }
+        return prev.map((it, idx) => idx === ex ? { ...it, quantity: nq } : it);
+      }
+      return [...prev, { productId: product.id, product, quantity: qty }];
+    });
+    setProducts(prev => prev.map(p => p.id === product.id ? { ...p, currentStock: p.currentStock - qty } : p));
+    showToast('추가 완료');
+    setScanPopup(null);
+  }, []); // eslint-disable-line
+
   const processBarcode = useCallback((code) => {
     const q = String(code || '').toLowerCase().trim(); if(!q) return;
+    const rawCode = String(code || '').trim().toUpperCase();
+    const command = COMMAND_BARCODES[rawCode];
+    const current = scanPopupRef.current;
+
+    if (command) {
+      if (command.type === 'outbound' && current?.type === 'match') {
+        // 출고 바코드 + 팝업 열림 → 키패드 없이 바로 세션 추가
+        addToSessionFromPopup(current.product, current.quantity || 1);
+        return;
+      }
+      showToast(`${command.label} 인식`);
+      if (command.screen !== 'outbound') onNavigate?.(command.screen);
+      return;
+    }
+
     const found = products.find(p => String(p.barcode||'').toLowerCase().trim() === q || String(p.productCode||'').toLowerCase().trim() === q || (p.codes||[]).some(c => String(c.codeValue||'').toLowerCase().trim() === q));
+
+    if (current?.type === 'match') {
+      if (found && found.id === current.product?.id) {
+        // 같은 품목 → 수량 증가 (재고 초과 체크)
+        const nextQty = (current.quantity || 1) + 1;
+        if (nextQty > found.currentStock) { showToast('재고 초과', 'error'); return; }
+        setScanPopup(prev => ({ ...prev, quantity: nextQty }));
+        return;
+      }
+      if (found) {
+        if (found.currentStock <= 0) { showToast(`"${found.productName}" 재고 없음`, 'error'); return; }
+        setScanPopup({ type: 'match', product: found, quantity: 1 });
+        return;
+      }
+      // 미등록 → 팝업 닫고 등록 팝업
+      setScanPopup(null);
+      setPendingBarcode(code); setScanned(null); setShowAddPopup(true);
+      return;
+    }
+
     if(!found) { setPendingBarcode(code); setScanned(null); setShowAddPopup(true); return; }
     if(found.currentStock <= 0) { showToast(`"${found.productName}" 재고 없음`, 'error'); return; }
-    setScanned(found); setQtyPad({product:found, value:'1', label:found.productName});
-  }, [products]);
+    setScanPopup({ type: 'match', product: found, quantity: 1 });
+  }, [products, onNavigate, addToSessionFromPopup]);
 
   const handleManualScan = (overrideVal) => {
     const val = (overrideVal !== undefined ? overrideVal : manualBarcode).trim();
@@ -766,7 +967,19 @@ const WarehouseOutbound = ({user, onGoHome, initialProduct}) => {
     setShowBarInput(false);
   };
 
-  useBarcodeScanner(processBarcode, dataReady && !qtyPad && !showAddPopup && !korKeypad && !showEditModal && !showBarInput && !showTransferModal);
+  const handlePrintCommandBarcode = async (type) => {
+    try {
+      const command = Object.values(COMMAND_BARCODES).find(x => x.type === type);
+      await productsAPI.printCommandLabel({ type });
+      showToast(`${command?.label || '명령 바코드'} 출력 요청 완료`);
+    } catch (e) {
+      showToast(e.response?.data?.error || '명령 바코드 출력 실패', 'error');
+    }
+  };
+
+  // scanPopup 자체는 스캐너를 막지 않음 (수량증가/명령처리 필요)
+  // 단, 팝업 내 수량 키패드가 열리면 스캐너 비활성
+  useBarcodeScanner(processBarcode, dataReady && !showAddPopup && !korKeypad && !showEditModal && !showBarInput && !showTransferModal && !scanPopupQtyPadOpen);
 
   const addToSession = (product, qtyStr) => {
     const qty = parseInt(qtyStr) || 1;
@@ -843,6 +1056,16 @@ const WarehouseOutbound = ({user, onGoHome, initialProduct}) => {
         overflow:'hidden',
       }}>
       {toast && <div style={{ position:'fixed', top:20, left:'50%', transform:'translateX(-50%)', zIndex:9999, background:BG1, border:`1px solid ${BLU}`, color:TX, padding:'10px 22px', borderRadius:8, fontSize:13, fontWeight:600 }}>{toast.msg}</div>}
+      {scanPopup?.type === 'match' && (
+        <ScanOutboundPopup
+          product={scanPopup.product}
+          quantity={scanPopup.quantity || 1}
+          onQuantityChange={(n) => setScanPopup(prev => ({ ...prev, quantity: n }))}
+          onQtyPadToggle={(open) => setScanPopupQtyPadOpen(open)}
+          onOutbound={() => addToSessionFromPopup(scanPopup.product, scanPopup.quantity || 1)}
+          onClose={() => setScanPopup(null)}
+        />
+      )}
       {qtyPad && <NumKeypad label={qtyPad.label} value={qtyPad.value} onChange={v => addToSession(qtyPad.product, v)} onClose={() => setQtyPad(null)} />}
       {korKeypad && (
         <KoreanKeypad
@@ -903,7 +1126,7 @@ const WarehouseOutbound = ({user, onGoHome, initialProduct}) => {
           <div style={{ padding:'8px 14px', borderBottom:`1px solid ${BD2}`, display:'flex', justifyContent:'space-between', fontSize:12 }}>
              <span style={{color:BLU, fontWeight:500}}>
                ※ 바코드를 스캔하면 리스트가 보여집니다.
-               {scanned ? <span style={{ marginLeft: 8, color: stockSt(scanned).color }}>최근 스캔: {scanned.productName}</span> : null}
+               {scanned ? <span style={{ marginLeft: 8, color: stockSt(scanned).color }}>최근 스캔: {scanned.productName}{scanned.specification ? ` / ${scanned.specification}` : ''}</span> : null}
              </span>
              <span style={{fontFamily:'monospace'}}>출고번호: <span style={{color:RED, fontWeight:700}}>{ref}</span></span>
           </div>
@@ -914,7 +1137,7 @@ const WarehouseOutbound = ({user, onGoHome, initialProduct}) => {
             {items.map((it, i) => (
               <div key={i} onClick={()=>setSelIdx(i)} style={{ display:'grid', gridTemplateColumns:'44px 1fr 80px 90px 100px', padding:'0 8px', borderBottom:`1px solid ${BD}`, background:selIdx===i?'#1a0a0a':BG0, cursor:'pointer' }}>
                 <div style={{padding:10, fontSize:12, color:TX2}}>{i+1}</div>
-                <div style={{padding:8}}><div style={{fontSize:14, fontWeight:selIdx===i?700:400}}>{it.product.productName}</div><div style={{fontSize:11, color:TX2}}>{it.product.productCode}</div></div>
+                <div style={{padding:8}}><ProductNameSpec product={it.product} nameStyle={{fontSize:14, fontWeight:selIdx===i?700:400}} /><div style={{fontSize:11, color:TX2}}>{it.product.productCode}</div></div>
                 <div style={{padding:10, textAlign:'right', color:RED, fontWeight:700}}>{it.quantity}</div>
                 <div style={{padding:10, textAlign:'right', fontSize:12, color:TX2}}>{it.product.unitPrice.toLocaleString()}</div>
                 <div style={{padding:10, textAlign:'right', fontWeight:600}}>{(it.quantity * it.product.unitPrice).toLocaleString()}</div>
@@ -937,6 +1160,7 @@ const WarehouseOutbound = ({user, onGoHome, initialProduct}) => {
               setShowBarInput(true);
               setTimeout(() => openKorKeypad('바코드 / 품목코드 입력', '', v => { setManualBarcode(v); handleManualScan(v); }), 50);
             }} />
+          <RightBtn icon="▥" label="출고바코드 출력" sub="W99998" color={RED} onClick={() => handlePrintCommandBarcode('outbound')} />
           <div style={{ borderTop:`1px solid ${BD2}`, margin:'4px 0' }} />
           <RightBtn icon="🔍" label="출고 수정" sub="이력 조회" color="#a371f7"
             onClick={() => { setEditInitialRef(''); setShowEditModal(true); }} />

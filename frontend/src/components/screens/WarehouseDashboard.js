@@ -18,11 +18,24 @@ const CATEGORY_COLORS = {
 };
 
 function getStockStatus(p) {
-  const stock = p?.currentStock || 0;
-  const safety = p?.safetyStock || 0;
+  const stock = Number(p?.currentStock || 0);
+  const safety = Number(p?.safetyStock || 0);
   if (stock === 0)        return { label: '소진', code: 'empty', color: '#f85149' };
-  if (stock <= safety)    return { label: '부족', code: 'low',   color: '#e3b341' };
+  if (safety > 0 && stock < safety * 0.3) return { label: '저재고', code: 'low', color: '#e3b341' };
   return                         { label: '정상', code: 'ok',    color: '#3fb950' };
+}
+
+function ProductNameSpec({ product, nameClassName, specClassName, nameStyle = {}, specStyle = {} }) {
+  return (
+    <span>
+      <span className={nameClassName} style={nameStyle}>{product?.productName || product?.name || '상품'}</span>
+      {product?.specification && (
+        <span className={specClassName} style={{ display: 'block', color: '#8b949e', fontSize: 11, marginTop: 2, ...specStyle }}>
+          {product.specification}
+        </span>
+      )}
+    </span>
+  );
 }
 
 const MENU_ITEMS = [
@@ -35,6 +48,11 @@ const MENU_ITEMS = [
   { id: 'report',       label: '리포트',  sub: 'Report',          key: 'F10', color: '#d2a8ff' },
   { id: 'auto-order',   label: '자동발주', sub: 'Auto-Order',     key: null,  color: '#555', disabled: true },
 ];
+
+const COMMAND_BARCODES = {
+  W99999: { func: 'inbound', label: '입고바코드', type: 'inbound' },
+  W99998: { func: 'outbound', label: '출고바코드', type: 'outbound' },
+};
 
 // ── 넘버패드 처리 ───────────────────────────────────────────
 function applyNumpad(prev, key) {
@@ -89,6 +107,7 @@ const WarehouseDashboard = ({ user, onLogout, defaultFunc = 'inbound', onGoHome,
   const barcodeRef = useRef(null);
   const qtyRef     = useRef(null);
   const searchRef  = useRef(null);
+  const qtyScanRef = useRef({ buf: [], startQuantity: null, timer: null });
 
   // ── 시계 ──────────────────────────────────────────────────
   useEffect(() => {
@@ -232,10 +251,59 @@ const WarehouseDashboard = ({ user, onLogout, defaultFunc = 'inbound', onGoHome,
   }, []);
 
   // ── 바코드 스캔 ───────────────────────────────────────────
+  const applyScannedCode = (code, baseQuantity = null) => {
+    if (!code) return true;
+    const command = COMMAND_BARCODES[String(code).trim().toUpperCase()];
+    if (command) {
+      setBarcodeInput('');
+      setScannedItem(null);
+      setQuantity('1');
+      switchFunc(command.func);
+      showToast(`${command.label} 인식`, 'success');
+      setTimeout(() => barcodeRef.current?.focus(), 80);
+      return true;
+    }
+    const product = productMap[code.toLowerCase()];
+    if (!product) {
+      showToast(`"${code}" 미등록 상품`, 'error');
+      triggerScanError();
+      setBarcodeInput('');
+      barcodeRef.current?.focus();
+      return true;
+    }
+
+    if (scannedItem?.id === product.id) {
+      setQuantity(prev => {
+        const base = baseQuantity !== null ? baseQuantity : prev;
+        const current = parseInt(base, 10) || 0;
+        const next = Math.min(99999, current + 1);
+        if (activeFunc === 'outbound' && next > (product.currentStock || 0)) {
+          showToast('재고 초과', 'error');
+          return String(current || 1);
+        }
+        showToast(`${product.productName} 수량 +1`, 'success');
+        return String(next || 1);
+      });
+      setBarcodeInput('');
+      setMode('input');
+      setTimeout(() => qtyRef.current?.focus(), 60);
+      return true;
+    }
+
+    setScannedItem(product);
+    setQuantity('1');
+    setBarcodeInput('');
+    setMode('input');
+    showToast(`${product.productName} 조회됨`, 'success');
+    setTimeout(() => qtyRef.current?.focus(), 60);
+    return true;
+  };
+
   const handleScan = (e) => {
     e?.preventDefault();
     const code = barcodeInput.trim();
     if (!code) return;
+    if (applyScannedCode(code)) return;
 
     const product = productMap[code.toLowerCase()];
     if (!product) {
@@ -254,6 +322,16 @@ const WarehouseDashboard = ({ user, onLogout, defaultFunc = 'inbound', onGoHome,
   };
 
   // ── 세션에 항목 추가 ──────────────────────────────────────
+  const handlePrintCommandBarcode = async (type) => {
+    try {
+      const command = Object.values(COMMAND_BARCODES).find(x => x.type === type);
+      await productsAPI.printCommandLabel({ type });
+      showToast(`${command?.label || '명령 바코드'} 출력 요청 완료`, 'success');
+    } catch (e) {
+      showToast(e.response?.data?.error || '명령 바코드 출력 실패', 'error');
+    }
+  };
+
   const handleAdd = () => {
     if (!scannedItem) { showToast('상품을 먼저 스캔하세요', 'warning'); return; }
     const qty = parseInt(quantity) || 0;
@@ -282,6 +360,7 @@ const WarehouseDashboard = ({ user, onLogout, defaultFunc = 'inbound', onGoHome,
         productId:   scannedItem.id,
         productCode: scannedItem.productCode,
         productName: scannedItem.productName,
+        specification: scannedItem.specification || '',
         category:    CATEGORY_GROUPS[scannedItem.category] || scannedItem.category,
         location:    scannedItem.warehouseId ? `W${scannedItem.warehouseId}` : '-',
         quantity:    qty,
@@ -488,11 +567,27 @@ const WarehouseDashboard = ({ user, onLogout, defaultFunc = 'inbound', onGoHome,
         && (invFilter.status   === 'all' || st.code === invFilter.status)
         && (!term || (p.productName || '').toLowerCase().includes(term)
                   || (p.productCode || '').toLowerCase().includes(term));
+  }).sort((a, b) => {
+    const catA = CATEGORY_GROUPS[a.category] || a.category || 'zzz 미분류';
+    const catB = CATEGORY_GROUPS[b.category] || b.category || 'zzz 미분류';
+    const catCmp = catA.localeCompare(catB, 'ko');
+    if (catCmp !== 0) return catCmp;
+    const nameCmp = (a.productName || '').localeCompare(b.productName || '', 'ko');
+    if (nameCmp !== 0) return nameCmp;
+    return (a.productCode || '').localeCompare(b.productCode || '', 'ko');
   });
 
   const lowStockList = [...products]
-    .filter(p => (p.currentStock || 0) <= (p.safetyStock || 0))
-    .sort((a, b) => (a.currentStock || 0) - (b.currentStock || 0));
+    .filter(p => getStockStatus(p).code !== 'ok')
+    .sort((a, b) => {
+      const catA = CATEGORY_GROUPS[a.category] || a.category || 'zzz 미분류';
+      const catB = CATEGORY_GROUPS[b.category] || b.category || 'zzz 미분류';
+      const catCmp = catA.localeCompare(catB, 'ko');
+      if (catCmp !== 0) return catCmp;
+      const stockCmp = (a.currentStock || 0) - (b.currentStock || 0);
+      if (stockCmp !== 0) return stockCmp;
+      return (a.productName || '').localeCompare(b.productName || '', 'ko');
+    });
 
   const activeColor = MENU_ITEMS.find(m => m.id === activeFunc)?.color || '#58a6ff';
   const activeLabel = MENU_ITEMS.find(m => m.id === activeFunc)?.label || '';
@@ -505,7 +600,7 @@ const WarehouseDashboard = ({ user, onLogout, defaultFunc = 'inbound', onGoHome,
     return (
       <div key={p.id} className="pos-inv-row" style={{ borderLeft: `3px solid ${st.color}` }}
         onClick={() => onClick && onClick(p)}>
-        <span className="pir-name">{p.productName}</span>
+        <span className="pir-name"><ProductNameSpec product={p} /></span>
         <span className="pir-cat"  style={{ color: catColor }}>{cat}</span>
         <span className="pir-loc">{p.warehouseId ? `W${p.warehouseId}` : '—'}</span>
         <span className="pir-stock" style={{ color: st.color, fontWeight: 700 }}>
@@ -607,13 +702,29 @@ const WarehouseDashboard = ({ user, onLogout, defaultFunc = 'inbound', onGoHome,
                   />
                   <button type="submit" className="pos-scan-btn">확인</button>
                 </form>
+                <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
+                  <button
+                    type="button"
+                    onClick={() => handlePrintCommandBarcode('inbound')}
+                    style={{ flex: 1, background: '#0d2616', border: '1px solid #238636', color: '#3fb950', borderRadius: 6, padding: '8px 10px', cursor: 'pointer', fontSize: 12, fontWeight: 700 }}
+                  >
+                    입고바코드 출력
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handlePrintCommandBarcode('outbound')}
+                    style={{ flex: 1, background: '#3a1a1a', border: '1px solid #b62324', color: '#f85149', borderRadius: 6, padding: '8px 10px', cursor: 'pointer', fontSize: 12, fontWeight: 700 }}
+                  >
+                    출고바코드 출력
+                  </button>
+                </div>
               </div>
 
               {/* 상품 정보 카드 */}
               {scannedItem ? (
                 <div className="pos-item-card">
                   <div className="pos-item-card__head">
-                    <span className="pos-item-card__name">{scannedItem.productName}</span>
+                    <ProductNameSpec product={scannedItem} nameClassName="pos-item-card__name" />
                     {(() => {
                       const cat   = CATEGORY_GROUPS[scannedItem.category] || scannedItem.category;
                       const color = CATEGORY_COLORS[cat] || '#8b949e';
@@ -662,6 +773,26 @@ const WarehouseDashboard = ({ user, onLogout, defaultFunc = 'inbound', onGoHome,
                           setQuantity(v ? String(Math.min(99999, parseInt(v))) : '0');
                         }}
                         onKeyDown={e => {
+                          if (e.key.length === 1 || e.key === 'Enter') {
+                            const now = Date.now();
+                            const scan = qtyScanRef.current;
+                            if (e.key.length === 1) {
+                              if (scan.buf.length === 0) scan.startQuantity = quantity;
+                              scan.buf.push({ char: e.key, ts: now });
+                              clearTimeout(scan.timer);
+                              scan.timer = setTimeout(() => { qtyScanRef.current = { buf: [], startQuantity: null, timer: null }; }, 280);
+                            } else if (e.key === 'Enter' && scan.buf.length >= 3) {
+                              const isScanner = scan.buf.every((item, i) => i === 0 || (item.ts - scan.buf[i - 1].ts) <= 50);
+                              const scannedCode = scan.buf.map(item => item.char).join('');
+                              const startQuantity = scan.startQuantity;
+                              qtyScanRef.current = { buf: [], startQuantity: null, timer: null };
+                              if (isScanner) {
+                                e.preventDefault();
+                                applyScannedCode(scannedCode, startQuantity);
+                                return;
+                              }
+                            }
+                          }
                           if (e.key === 'Enter') { e.preventDefault(); handleAdd(); }
                           if (e.key === 'Escape') { e.preventDefault(); setScannedItem(null); setMode('shortcut'); barcodeRef.current?.focus(); }
                           if (e.key >= '0' && e.key <= '9') {
@@ -788,7 +919,7 @@ const WarehouseDashboard = ({ user, onLogout, defaultFunc = 'inbound', onGoHome,
                         return (
                           <div key={ri.id} className={`pos-verify-item${verified ? ' pos-verify-item--ok' : ''}`}>
                             <span className="pos-verify-item__check">{verified ? '✓' : '○'}</span>
-                            <span className="pos-verify-item__name">{ri.product?.productName || '상품'}</span>
+                            <ProductNameSpec product={ri.product} nameClassName="pos-verify-item__name" />
                             <span className="pos-verify-item__qty">{ri.quantity}개</span>
                             <span className={`pos-verify-item__st ${verified ? 'ok' : 'pend'}`}>
                               {verified ? '확인' : '대기'}
@@ -842,7 +973,7 @@ const WarehouseDashboard = ({ user, onLogout, defaultFunc = 'inbound', onGoHome,
               {selectedProduct && (
                 <div className="pos-item-card pos-item-card--detail">
                   <div className="pos-item-card__head">
-                    <span className="pos-item-card__name">{selectedProduct.productName}</span>
+                    <ProductNameSpec product={selectedProduct} nameClassName="pos-item-card__name" />
                     {(() => {
                       const cat   = CATEGORY_GROUPS[selectedProduct.category] || selectedProduct.category;
                       const color = CATEGORY_COLORS[cat] || '#8b949e';
@@ -885,8 +1016,8 @@ const WarehouseDashboard = ({ user, onLogout, defaultFunc = 'inbound', onGoHome,
                 </div>
                 <div className="pos-inv-table__foot">
                   <span>총 {filteredInventory.length}종</span>
-                  <span style={{ color: '#f85149' }}>소진 {filteredInventory.filter(p => (p.currentStock||0)===0).length}종</span>
-                  <span style={{ color: '#e3b341' }}>부족 {filteredInventory.filter(p => (p.currentStock||0)>0&&(p.currentStock||0)<=(p.safetyStock||0)).length}종</span>
+                  <span style={{ color: '#f85149' }}>소진 {filteredInventory.filter(p => getStockStatus(p).code === 'empty').length}종</span>
+                  <span style={{ color: '#e3b341' }}>저재고 {filteredInventory.filter(p => getStockStatus(p).code === 'low').length}종</span>
                 </div>
               </div>
             </div>
@@ -901,7 +1032,7 @@ const WarehouseDashboard = ({ user, onLogout, defaultFunc = 'inbound', onGoHome,
                   소진 {lowStockList.filter(p => (p.currentStock||0)===0).length}건
                 </span>
                 <span className="pos-badge pos-badge--low">
-                  부족 {lowStockList.filter(p => (p.currentStock||0)>0).length}건
+                  저재고 {lowStockList.filter(p => getStockStatus(p).code === 'low').length}건
                 </span>
                 <button className="pos-btn pos-btn--reset pos-btn--sm" onClick={loadData} style={{ marginLeft: 'auto' }}>
                   🔄 새로고침
@@ -986,7 +1117,7 @@ const WarehouseDashboard = ({ user, onLogout, defaultFunc = 'inbound', onGoHome,
                         {reportType==='monthly'&&<><td>—</td><td>—</td></>}</tr>
                     ))}
                     {reportView === 'item' && products.slice(0,20).map(p => (
-                      <tr key={p.id}><td>{p.productName}</td><td>—</td><td>—</td><td>—</td><td>—</td>
+                      <tr key={p.id}><td><ProductNameSpec product={p} /></td><td>—</td><td>—</td><td>—</td><td>—</td>
                         {reportType==='monthly'&&<><td>—</td><td>{(p.currentStock||0).toLocaleString()}</td></>}</tr>
                     ))}
                   </tbody>
@@ -1031,7 +1162,7 @@ const WarehouseDashboard = ({ user, onLogout, defaultFunc = 'inbound', onGoHome,
                 onClick={() => setSelectedSessionIdx(i)}>
                 <span className="rp-num">{i + 1}</span>
                 <span className="rp-name">
-                  <span className="rp-pname">{item.productName}</span>
+                  <ProductNameSpec product={item} nameClassName="rp-pname" />
                   <span className="rp-pcode">{item.productCode}</span>
                 </span>
                 <span className="rp-loc">{item.location}</span>
