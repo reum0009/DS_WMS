@@ -135,6 +135,10 @@ const Request = sequelize.define('Request', {
       key: 'id'
     }
   },
+  warehouseId: {
+    type: Sequelize.INTEGER,
+    allowNull: true
+  },
   status: {
     type: Sequelize.ENUM('pending', 'approved', 'rejected', 'released'),
     defaultValue: 'pending'
@@ -192,6 +196,23 @@ const Warehouse = sequelize.define('Warehouse', {
   tableName: 'warehouses'
 });
 
+const WarehouseNotice = sequelize.define('WarehouseNotice', {
+  id: { type: Sequelize.INTEGER, primaryKey: true, autoIncrement: true },
+  warehouseId: {
+    type: Sequelize.INTEGER,
+    allowNull: false,
+    references: { model: Warehouse, key: 'id' }
+  },
+  content: { type: Sequelize.TEXT, allowNull: false },
+  startDate: { type: Sequelize.DATEONLY, allowNull: false },
+  endDate: { type: Sequelize.DATEONLY, allowNull: false },
+  isActive: { type: Sequelize.BOOLEAN, defaultValue: true },
+  createdBy: { type: Sequelize.INTEGER, allowNull: true },
+}, {
+  timestamps: true,
+  tableName: 'warehouse_notices'
+});
+
 const Product = sequelize.define('Product', {
   id: {
     type: Sequelize.INTEGER,
@@ -208,7 +229,7 @@ const Product = sequelize.define('Product', {
     type: Sequelize.STRING,
     allowNull: false
   },
-  // 규격 (사이즈/모델명 등) — 동일 품명이라도 규격이 다르면 별개 품목
+  // 상품명(기존 DB 필드명: specification) — 동일 품명이라도 상품명이 다르면 별개 품목
   specification: {
     type: Sequelize.STRING,
     allowNull: true
@@ -606,6 +627,8 @@ ProductAttribute.belongsTo(Product, { foreignKey: 'itemId' });
 ProductAttribute.belongsTo(DeptCustomField, { as: 'field', foreignKey: 'fieldId' });
 User.belongsTo(Category, { as: 'dept', foreignKey: 'deptId' });
 User.belongsTo(Warehouse, { as: 'warehouseInfo', foreignKey: 'warehouseId' });
+WarehouseNotice.belongsTo(Warehouse, { as: 'warehouse', foreignKey: 'warehouseId' });
+WarehouseNotice.belongsTo(User, { as: 'creator', foreignKey: 'createdBy' });
 Product.hasMany(ProductWarehouseStock, { as: 'warehouseStocks', foreignKey: 'productId', onDelete: 'CASCADE' });
 ProductWarehouseStock.belongsTo(Product, { foreignKey: 'productId' });
 ProductWarehouseStock.belongsTo(Warehouse, { as: 'warehouse', foreignKey: 'warehouseId' });
@@ -617,6 +640,7 @@ SafetyStockRun.belongsTo(Warehouse, { as: 'warehouse', foreignKey: 'warehouseId'
 Request.belongsTo(User, { as: 'applicant', foreignKey: 'applicantId' });
 Request.belongsTo(User, { as: 'approver', foreignKey: 'approverId' });
 Request.belongsTo(User, { as: 'releaser', foreignKey: 'releaserId' });
+Request.belongsTo(Warehouse, { as: 'warehouse', foreignKey: 'warehouseId' });
 User.hasMany(Request, { foreignKey: 'applicantId', as: 'requests' });
 Product.belongsTo(Warehouse, { foreignKey: 'warehouseId' });
 RequestItem.belongsTo(Request, { foreignKey: 'requestId', onDelete: 'CASCADE' });
@@ -642,7 +666,7 @@ const UpdateHistory = sequelize.define('UpdateHistory', {
 UpdateHistory.belongsTo(User, { as: 'applier', foreignKey: 'appliedBy' });
 
 // 모델을 전역으로 설정
-sequelize.models = { User, Request, Warehouse, Product, ProductWarehouseStock, SafetyStockRun, ItemCode, GwProductMapping, RequestItem, StockHistory, Category, CategoryWarehouseStock, DeptCustomField, ProductAttribute, Supplier, WarehouseTransfer, WarehouseTransferItem, Invitation, UpdateHistory };
+sequelize.models = { User, Request, Warehouse, WarehouseNotice, Product, ProductWarehouseStock, SafetyStockRun, ItemCode, GwProductMapping, GwDepartment, GwUser, RequestItem, StockHistory, Category, CategoryWarehouseStock, DeptCustomField, ProductAttribute, Supplier, WarehouseTransfer, WarehouseTransferItem, Invitation, UpdateHistory };
 global.sequelize = sequelize;
 
 // 데이터베이스 동기화 — alter:true 로 새 컬럼/테이블 자동 추가
@@ -701,6 +725,7 @@ try {
   app.use('/api/users', require('./routes/users'));
   app.use('/api/products', require('./routes/products'));
   app.use('/api/warehouses', require('./routes/warehouses'));
+  app.use('/api/notices', require('./routes/notices'));
   app.use('/api/request-items', require('./routes/requestItems'));
   app.use('/api/dashboard', require('./routes/dashboard'));
   app.use('/api/stock-history', require('./routes/stockHistory'));
@@ -724,7 +749,11 @@ app.use(require('./middleware/errorHandler'));
 // 프론트엔드 정적 파일 서빙 (프로덕션 빌드)
 const FRONTEND_BUILD = path.join(__dirname, '../frontend/build');
 if (fs.existsSync(FRONTEND_BUILD)) {
-  app.use(express.static(FRONTEND_BUILD));
+  app.use(express.static(FRONTEND_BUILD, {
+    setHeaders: (res) => {
+      res.setHeader('Cache-Control', 'no-cache');
+    }
+  }));
   app.get('*', (req, res) => res.sendFile(path.join(FRONTEND_BUILD, 'index.html')));
 }
 

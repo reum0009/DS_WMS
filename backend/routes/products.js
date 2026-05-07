@@ -4,9 +4,19 @@ const { auth, roleAuth } = require('../middleware/auth');
 const multer  = require('multer');
 const csv     = require('csv-parser');
 const fs      = require('fs');
+const path    = require('path');
+const os      = require('os');
+const { spawn } = require('child_process');
 
 const router = express.Router();
 const upload = multer({ dest: 'uploads/' });
+const DEFAULT_LABEL_PRINTER = process.env.LABEL_PRINTER_NAME || 'TSC TTP-247';
+const LABEL_SCRIPT_PATH = path.join(__dirname, '..', 'scripts', 'printLabel.ps1');
+const COMMAND_LABELS = {
+  inbound: { barcode: 'W99999', productName: '입고바코드' },
+  outbound: { barcode: 'W99998', productName: '출고바코드' },
+};
+const RESERVED_COMMAND_BARCODES = new Set(Object.values(COMMAND_LABELS).map(x => x.barcode));
 const DAY_MS = 24 * 60 * 60 * 1000;
 const SAFETY_REVIEW_DAYS = 14;   // 월 2회 발주 기준
 const SAFETY_WINDOW_DAYS = 60;   // 최근 2개월
@@ -235,6 +245,156 @@ async function nextItemCode() {
   return `ITM-${String(seq + 1).padStart(6, '0')}`;
 }
 
+function parseWarehouseBarcodeSeq(codeValue) {
+  const match = String(codeValue || '').trim().match(/^W(\d{5})$/i);
+  return match ? parseInt(match[1], 10) : 0;
+}
+
+function formatWarehouseBarcode(seq) {
+  return `W${String(seq).padStart(5, '0')}`;
+}
+
+async function getUsedWarehouseBarcodeSet({ transaction } = {}) {
+  const { ItemCode, Product } = global.sequelize.models;
+  const rows = await ItemCode.findAll({
+    attributes: ['codeValue'],
+    where: {
+      codeType: 'barcode',
+      codeValue: { [Op.like]: 'W_____' },
+    },
+    include: [{ model: Product, as: 'product', where: { isActive: true }, attributes: [] }],
+    transaction,
+  });
+  return new Set(rows.map(r => String(r.codeValue || '').trim().toUpperCase()).filter(v => /^W\d{5}$/.test(v)));
+}
+
+async function nextWarehouseBarcode({ transaction, reserved = new Set() } = {}) {
+  const used = await getUsedWarehouseBarcodeSet({ transaction });
+  const reservedSet = new Set([
+    ...Array.from(RESERVED_COMMAND_BARCODES),
+    ...Array.from(reserved).map(v => String(v || '').trim().toUpperCase()),
+  ]);
+  // maxSeq는 실제 사용 중인 바코드 기준으로만 계산
+  // (예약 바코드를 포함하면 W99999가 maxSeq=99999가 되어 루프가 돌지 않는 버그 발생)
+  const maxSeq = Math.max(0, ...Array.from(used).map(parseWarehouseBarcodeSeq));
+  for (let seq = maxSeq + 1; seq <= 99999; seq += 1) {
+    const code = formatWarehouseBarcode(seq);
+    if (!used.has(code) && !reservedSet.has(code)) return code;
+  }
+  // maxSeq 이하 구간에서 빈 번호 탐색 (갭 채우기)
+  for (let seq = 1; seq <= maxSeq; seq += 1) {
+    const code = formatWarehouseBarcode(seq);
+    if (!used.has(code) && !reservedSet.has(code)) return code;
+  }
+  throw new Error('사용 가능한 자동 바코드 번호가 없습니다.');
+}
+
+async function normalizeGeneratedWarehouseBarcodes(codes, { excludeItemId = null, transaction } = {}) {
+  if (!Array.isArray(codes)) return codes;
+  const { ItemCode, Product } = global.sequelize.models;
+  const normalized = codes.map(c => ({ ...c }));
+  const reserved = new Set();
+
+  for (const c of normalized) {
+    const codeValue = String(c.codeValue || '').trim().toUpperCase();
+    if (c.codeType !== 'barcode' || !/^W\d{5}$/.test(codeValue)) continue;
+
+    const where = { codeValue };
+    if (excludeItemId) where.itemId = { [Op.ne]: excludeItemId };
+    const existing = await ItemCode.findOne({
+      where,
+      include: [{ model: Product, as: 'product', where: { isActive: true } }],
+      transaction,
+    });
+
+    if (existing || reserved.has(codeValue)) {
+      c.codeValue = await nextWarehouseBarcode({ transaction, reserved });
+    } else {
+      c.codeValue = codeValue;
+    }
+    reserved.add(c.codeValue);
+  }
+
+  return normalized;
+}
+
+const CODE128_PATTERNS = [
+  '212222','222122','222221','121223','121322','131222','122213','122312','132212','221213',
+  '221312','231212','112232','122132','122231','113222','123122','123221','223211','221132',
+  '221231','213212','223112','312131','311222','321122','321221','312212','322112','322211',
+  '212123','212321','232121','111323','131123','131321','112313','132113','132311','211313',
+  '231113','231311','112133','112331','132131','113123','113321','133121','313121','211331',
+  '231131','213113','213311','213131','311123','311321','331121','312113','312311','332111',
+  '314111','221411','431111','111224','111422','121124','121421','141122','141221','112214',
+  '112412','122114','122411','142112','142211','241211','221114','413111','241112','134111',
+  '111242','121142','121241','114212','124112','124211','411212','421112','421211','212141',
+  '214121','412121','111143','111341','131141','114113','114311','411113','411311','113141',
+  '114131','311141','411131','211412','211214','211232','2331112',
+];
+
+function code128Bars(value) {
+  const text = String(value || '').trim();
+  if (!text || !/^[\x20-\x7e]+$/.test(text)) {
+    throw new Error('바코드는 영문/숫자/기호만 출력할 수 있습니다.');
+  }
+  let codes;
+  if (/^\d{4,}$/.test(text)) {
+    codes = [];
+    let rest = text;
+    if (rest.length % 2 === 1) {
+      codes.push(104, rest.charCodeAt(0) - 32, 99);
+      rest = rest.slice(1);
+    } else {
+      codes.push(105);
+    }
+    for (let i = 0; i < rest.length; i += 2) {
+      codes.push(parseInt(rest.slice(i, i + 2), 10));
+    }
+  } else {
+    codes = [104, ...Array.from(text).map(ch => ch.charCodeAt(0) - 32)];
+  }
+  const checksum = codes.reduce((sum, code, idx) => sum + (idx === 0 ? code : code * idx), 0) % 103;
+  codes.push(checksum, 106);
+
+  const bars = [];
+  let x = 0;
+  for (const code of codes) {
+    const pattern = CODE128_PATTERNS[code];
+    for (let i = 0; i < pattern.length; i += 1) {
+      const width = parseInt(pattern[i], 10);
+      if (i % 2 === 0) bars.push({ x, w: width });
+      x += width;
+    }
+  }
+  return { bars, barModules: x };
+}
+
+function runPowerShellPrint(data) {
+  return new Promise((resolve, reject) => {
+    const tempPath = path.join(os.tmpdir(), `wms-label-${Date.now()}-${Math.random().toString(16).slice(2)}.json`);
+    fs.writeFileSync(tempPath, JSON.stringify(data), 'utf8');
+
+    const child = spawn('powershell.exe', [
+      '-NoProfile',
+      '-ExecutionPolicy', 'Bypass',
+      '-File', LABEL_SCRIPT_PATH,
+      '-DataPath', tempPath,
+    ], { windowsHide: true });
+
+    let stderr = '';
+    child.stderr.on('data', chunk => { stderr += chunk.toString(); });
+    child.on('error', err => {
+      try { fs.unlinkSync(tempPath); } catch (_) {}
+      reject(err);
+    });
+    child.on('close', code => {
+      try { fs.unlinkSync(tempPath); } catch (_) {}
+      if (code === 0) resolve();
+      else reject(new Error(stderr.trim() || `라벨 출력 프로세스가 실패했습니다. code=${code}`));
+    });
+  });
+}
+
 // ── 중복 감지 (동일 스펙 = 동일 품목) ────────────────────────────
 // POST /api/products/check-duplicate
 router.post('/check-duplicate', auth, async (req, res) => {
@@ -251,7 +411,7 @@ router.post('/check-duplicate', auth, async (req, res) => {
 
   const items = await Product.findAll({ where, limit: 5 });
 
-  // 완전 일치 (이름+규격+카테고리+단위)
+  // 완전 일치 (품목명+상품명+카테고리+단위)
   const exact = items.filter(p =>
     p.productName === productName.trim() &&
     (p.specification || '') === (specification || '').trim() &&
@@ -262,9 +422,75 @@ router.post('/check-duplicate', auth, async (req, res) => {
   res.json({ exact: exact.map(p => p.id), similar: items });
 });
 
+router.get('/next-barcode', auth, roleAuth(['admin', 'dept_admin']), async (req, res) => {
+  try {
+    const barcode = await nextWarehouseBarcode();
+    res.json({ barcode });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.post('/print-label', auth, roleAuth(['admin', 'dept_admin']), async (req, res) => {
+  try {
+    const { ItemCode, Product } = global.sequelize.models;
+    const productId = parseInt(req.body?.productId, 10);
+    const barcode = String(req.body?.barcode || '').trim();
+    const printerName = String(req.body?.printerName || DEFAULT_LABEL_PRINTER).trim();
+    if (!productId || !barcode) return res.status(400).json({ error: '출력할 바코드 정보가 없습니다.' });
+
+    const code = await ItemCode.findOne({
+      where: { itemId: productId, codeType: 'barcode', codeValue: barcode },
+      include: [{ model: Product, as: 'product', where: { isActive: true } }],
+    });
+    if (!code) return res.status(404).json({ error: '품목에 연결된 바코드를 찾을 수 없습니다.' });
+
+    const barcodeData = code128Bars(barcode);
+    await runPowerShellPrint({
+      printerName,
+      productName: code.product.productName,
+      barcode,
+      paperWidthHundredths: 197,
+      paperHeightHundredths: 118,
+      offsetX: 2,
+      offsetY: 8,
+      ...barcodeData,
+    });
+
+    res.json({ ok: true, printerName, productName: code.product.productName, barcode });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // ── 품목 전체 조회 (ItemCode 포함) ───────────────────────────────
 // GET /api/products?inactive=1  → 비활성 목록
 // GET /api/products              → 활성 목록 (기본)
+router.post('/print-command-label', auth, roleAuth(['admin', 'dept_admin', 'warehouse']), async (req, res) => {
+  try {
+    const type = String(req.body?.type || '').trim();
+    const command = COMMAND_LABELS[type];
+    if (!command) return res.status(400).json({ error: '지원하지 않는 명령 바코드입니다.' });
+
+    const printerName = String(req.body?.printerName || DEFAULT_LABEL_PRINTER).trim();
+    const barcodeData = code128Bars(command.barcode);
+    await runPowerShellPrint({
+      printerName,
+      productName: command.productName,
+      barcode: command.barcode,
+      paperWidthHundredths: 197,
+      paperHeightHundredths: 118,
+      offsetX: 2,
+      offsetY: 8,
+      ...barcodeData,
+    });
+
+    res.json({ ok: true, printerName, ...command });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 router.get('/', auth, async (req, res) => {
   try {
     const { Product, ItemCode, Supplier, ProductWarehouseStock, Warehouse, Category } = global.sequelize.models;
@@ -305,6 +531,139 @@ router.get('/', auth, async (req, res) => {
     res.json(scoped);
   } catch (err) {
     res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /api/products/:id/adjust-stock
+// body: { warehouseId, delta, reason }
+router.post('/:id/adjust-stock', auth, roleAuth(['admin', 'dept_admin']), async (req, res) => {
+  const t = await global.sequelize.transaction();
+  try {
+    const { Product, ProductWarehouseStock, Warehouse, StockHistory } = global.sequelize.models;
+    const productId = parseInt(req.params.id, 10);
+    const warehouseId = parseInt(req.body?.warehouseId, 10);
+    const delta = parseInt(req.body?.delta, 10);
+    const reason = String(req.body?.reason || '').trim();
+
+    if (!Number.isInteger(productId) || productId <= 0) {
+      await t.rollback();
+      return res.status(400).json({ error: '유효하지 않은 품목입니다.' });
+    }
+    if (!Number.isInteger(warehouseId) || warehouseId <= 0) {
+      await t.rollback();
+      return res.status(400).json({ error: '조정할 창고를 선택하세요.' });
+    }
+    if (!Number.isInteger(delta) || delta === 0) {
+      await t.rollback();
+      return res.status(400).json({ error: '조정 수량은 0이 아닌 정수여야 합니다.' });
+    }
+    if (!reason) {
+      await t.rollback();
+      return res.status(400).json({ error: '조정 사유를 입력하세요.' });
+    }
+
+    const product = await Product.findOne({
+      where: { id: productId, isActive: true },
+      transaction: t,
+      lock: t.LOCK.UPDATE,
+    });
+    if (!product) {
+      await t.rollback();
+      return res.status(404).json({ error: '품목을 찾을 수 없습니다.' });
+    }
+
+    const warehouseWhere = { id: warehouseId };
+    if (req.user.role === 'dept_admin') warehouseWhere.deptId = req.user.deptId;
+    const warehouse = await Warehouse.findOne({ where: warehouseWhere, transaction: t });
+    if (!warehouse) {
+      await t.rollback();
+      return res.status(404).json({ error: '조정 가능한 창고를 찾을 수 없습니다.' });
+    }
+
+    const existingStocks = await ProductWarehouseStock.findAll({
+      where: { productId },
+      attributes: ['warehouseId', 'currentStock'],
+      transaction: t,
+    });
+    const hasExistingWarehouseStocks = existingStocks.length > 0;
+
+    const [warehouseStock, createdWarehouseStock] = await ProductWarehouseStock.findOrCreate({
+      where: { productId, warehouseId },
+      defaults: {
+        productId,
+        warehouseId,
+        currentStock: 0,
+        safetyStock: 0,
+        safetyStockMode: 'manual',
+        manualSafetyStock: 0,
+        autoSafetyStock: 0,
+        leadTimeDays: 3,
+        serviceLevel: 95.00,
+        zValue: 1.650,
+      },
+      transaction: t,
+      lock: t.LOCK.UPDATE,
+    });
+
+    const legacyTotalStock = parseInt(product.currentStock, 10) || 0;
+    const balanceBefore = createdWarehouseStock && !hasExistingWarehouseStocks && legacyTotalStock > 0
+      ? legacyTotalStock
+      : (parseInt(warehouseStock.currentStock, 10) || 0);
+    const balanceAfter = balanceBefore + delta;
+    if (balanceAfter < 0) {
+      await t.rollback();
+      return res.status(400).json({ error: '창고 재고가 0 미만이 될 수 없습니다.' });
+    }
+
+    await warehouseStock.update({ currentStock: balanceAfter }, { transaction: t });
+
+    const totalRows = await ProductWarehouseStock.findAll({
+      where: { productId },
+      attributes: ['currentStock'],
+      transaction: t,
+    });
+    const totalCurrentStock = totalRows.reduce((sum, row) => sum + (parseInt(row.currentStock, 10) || 0), 0);
+    await product.update({ currentStock: totalCurrentStock }, { transaction: t });
+
+    await StockHistory.create({
+      productId,
+      type: 'adjustment',
+      quantity: delta,
+      balanceBefore,
+      balanceAfter,
+      reference: `MANUAL-${Date.now()}`,
+      referenceType: 'manual',
+      userId: req.user.id,
+      warehouseId,
+      reason,
+      notes: `${warehouse.warehouseName} 재고 수동 조정`,
+    }, { transaction: t });
+
+    await t.commit();
+
+    const updated = await Product.findByPk(productId, {
+      include: [{
+        model: ProductWarehouseStock,
+        as: 'warehouseStocks',
+        required: false,
+        include: [{ model: Warehouse, as: 'warehouse', attributes: ['id', 'warehouseName', 'deptId'], required: false }],
+      }],
+    });
+
+    res.json({
+      product: updated,
+      warehouseStock: {
+        productId,
+        warehouseId,
+        currentStock: balanceAfter,
+        balanceBefore,
+        balanceAfter,
+      },
+      totalCurrentStock,
+    });
+  } catch (err) {
+    await t.rollback();
+    res.status(400).json({ error: err.message });
   }
 });
 
@@ -369,12 +728,17 @@ router.post('/', auth, roleAuth(['admin', 'dept_admin']), async (req, res) => {
     if (parsedUnitPrice.error) return res.status(400).json({ error: parsedUnitPrice.error });
 
     const normalizedWarehouseStocks = normalizeWarehouseStocks(warehouseStocks);
+    const normalizedCodes = await normalizeGeneratedWarehouseBarcodes(codes, { transaction: t });
 
     // ── 바코드/코드 중복 체크 추가 ──
-    if (codes.length > 0) {
+    if (normalizedCodes.length > 0) {
       const { ItemCode, Product } = global.sequelize.models;
-      for (const c of codes) {
+      for (const c of normalizedCodes) {
         if (!c.codeValue || !c.codeValue.trim()) continue;
+        if (RESERVED_COMMAND_BARCODES.has(c.codeValue.trim().toUpperCase())) {
+          await t.rollback();
+          return res.status(409).json({ error: `"${c.codeValue}" 코드는 입출고 명령 바코드로 예약되어 있습니다.` });
+        }
         
         const existingCode = await ItemCode.findOne({
           where: { codeValue: c.codeValue.trim() },
@@ -406,7 +770,7 @@ router.post('/', auth, roleAuth(['admin', 'dept_admin']), async (req, res) => {
       if (dup) {
         await t.rollback();
         return res.status(409).json({
-          error: '동일 규격의 품목이 이미 존재합니다',
+          error: '동일 상품명의 품목이 이미 존재합니다',
           existing: dup,
         });
       }
@@ -459,8 +823,8 @@ router.post('/', auth, roleAuth(['admin', 'dept_admin']), async (req, res) => {
     }
 
     // 다중 코드 저장
-    if (codes.length > 0) {
-      const codeRows = codes
+    if (normalizedCodes.length > 0) {
+      const codeRows = normalizedCodes
         .filter(c => c.codeValue && c.codeValue.trim())
         .map(c => ({
           itemId:     product.id,
@@ -582,8 +946,13 @@ router.put('/:id', auth, roleAuth(['admin', 'dept_admin']), async (req, res) => 
     // ── 바코드/코드 중복 체크 추가 (수정 시) ──
     if (Array.isArray(codes)) {
       const { ItemCode, Product } = global.sequelize.models;
-      for (const c of codes) {
+      const normalizedCodes = await normalizeGeneratedWarehouseBarcodes(codes, { excludeItemId: product.id, transaction: t });
+      for (const c of normalizedCodes) {
         if (!c.codeValue || !c.codeValue.trim()) continue;
+        if (RESERVED_COMMAND_BARCODES.has(c.codeValue.trim().toUpperCase())) {
+          await t.rollback();
+          return res.status(409).json({ error: `"${c.codeValue}" 코드는 입출고 명령 바코드로 예약되어 있습니다.` });
+        }
 
         const existingCode = await ItemCode.findOne({
           where: { 
@@ -604,7 +973,7 @@ router.put('/:id', auth, roleAuth(['admin', 'dept_admin']), async (req, res) => 
 
       // 코드 배열이 전달된 경우 전체 교체
       await ItemCode.destroy({ where: { itemId: product.id }, transaction: t });
-      const codeRows = codes
+      const codeRows = normalizedCodes
         .filter(c => c.codeValue && c.codeValue.trim())
         .map(c => ({
           itemId:     product.id,

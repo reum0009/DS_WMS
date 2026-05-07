@@ -153,6 +153,12 @@ body {
   background: #f1f3f5;
 }
 
+.content-area-full {
+  padding: 0;
+  overflow: hidden;
+  background: #0d1117;
+}
+
 /* ======================================
    대시보드 스타일
    ====================================== */

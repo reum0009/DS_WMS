@@ -230,30 +230,6 @@
   flex-shrink: 0;
 }
 
-/* DS 로고 + 브랜드 */
-.home-left__brand {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  padding: 30px 20px 20px;
-  background: linear-gradient(180deg, #161b22 0%, #0d1117 100%);
-  border-bottom: 1px solid #21262d;
-  gap: 12px;
-}
-.home-left__brand-name {
-  font-size: 1.8rem;
-  font-weight: 900;
-  color: #d4a843;
-  letter-spacing: 3px;
-  text-transform: uppercase;
-}
-.home-left__brand-sub {
-  font-size: 1.1rem;
-  color: #6e7681;
-  font-weight: 400;
-  letter-spacing: 0.5px;
-}
-
 /* 섹션 공통 */
 .home-left__section {
   padding: 20px 20px;

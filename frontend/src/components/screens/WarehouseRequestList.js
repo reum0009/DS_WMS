@@ -1,9 +1,9 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { requestsAPI, releasesAPI, gwRequestsAPI } from '../../api/api';
+import { requestsAPI, releasesAPI, gwRequestsAPI, productsAPI } from '../../api/api';
 
 const BG0='#0d1117',BG1='#161b22',BG2='#1c2128',BD='#30363d',BD2='#21262d';
 const TX='#e6edf3',TX2='#8b949e',TX3='#444c56';
-const RED='#f85149',GRN='#3fb950',ORG='#f0883e',BLU='#58a6ff';
+const RED='#f85149',GRN='#3fb950',ORG='#f0883e',BLU='#58a6ff',YLW='#e3b341';
 
 function formatClock(d){const p=n=>String(n).padStart(2,'0');return `${d.getFullYear()}.${p(d.getMonth()+1)}.${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;}
 function parseDateSafe(v){
@@ -62,6 +62,66 @@ const requestTitle = (r) => {
   return r.itemName || r.items?.[0]?.Product?.productName || r.requestNumber || '-';
 };
 
+const sourceMeta = (r) => {
+  if (r?.isGw) return { label: '그룹웨어 요청', color: BLU, bg: '#0d2044' };
+  if (String(r?.requestNumber || '').startsWith('WMS-') || r?.category === 'WMS') {
+    return { label: 'WMS 신청', color: GRN, bg: '#0d2616' };
+  }
+  return null;
+};
+
+const normName = (v) => String(v || '').trim().replace(/\s+/g, ' ').toLowerCase();
+
+const itemChoiceKey = (request, item) => `${request?.id || request?.requestNumber}:${item?.id}`;
+
+const productLabel = (p) => {
+  const spec = p?.specification ? ` / ${p.specification}` : '';
+  return `${p?.productName || '-'}${spec}`;
+};
+
+const requestItemName = (item, request) => (
+  item?.requestedProductName ||
+  item?.Product?.productName ||
+  request?.itemName ||
+  ''
+);
+
+const refreshRequestProductMatches = (request, products, choices = {}) => {
+  const rows = Array.isArray(products) ? products : [];
+  const cloned = {
+    ...request,
+    items: (request.items || []).map(item => {
+      const name = requestItemName(item, request);
+      const key = normName(name);
+      const candidates = rows
+        .filter(p => normName(p.productName) === key)
+        .map(p => ({ ...p, currentStock: Number(p.currentStock || 0) }))
+        .sort((a, b) => {
+          const qty = Number(item.quantity || 0);
+          const aEnough = a.currentStock >= qty ? 1 : 0;
+          const bEnough = b.currentStock >= qty ? 1 : 0;
+          if (aEnough !== bEnough) return bEnough - aEnough;
+          if (a.currentStock !== b.currentStock) return b.currentStock - a.currentStock;
+          return String(a.productCode || '').localeCompare(String(b.productCode || ''), 'ko');
+        });
+      const chosenId = Number(choices[itemChoiceKey(request, item)] || 0);
+      const selected = candidates.find(p => Number(p.id) === chosenId) || candidates[0] || null;
+      return {
+        ...item,
+        requestedProductName: name,
+        productId: selected?.id || item.productId,
+        Product: selected ? { ...item.Product, ...selected } : item.Product,
+        matchCandidates: candidates,
+        matchedProductId: selected?.id || item.productId || null,
+        matchedStock: selected ? Number(selected.currentStock || 0) : Number(item.Product?.currentStock || 0),
+        hasMultipleMatches: candidates.length > 1,
+        hasStockMatch: !!selected && Number(selected.currentStock || 0) > 0,
+      };
+    })
+  };
+  return cloned;
+};
+
 const WarehouseRequestList = ({ user, onGoHome }) => {
   const [clock,    setClock]    = useState(formatClock(new Date()));
   const [requests, setRequests] = useState([]);
@@ -71,6 +131,11 @@ const WarehouseRequestList = ({ user, onGoHome }) => {
   const [processing, setProc]   = useState(false);
   const [loading,  setLoading]  = useState(false);
   const [dupCheck, setDupCheck] = useState(null); // { target, duplicates }
+  const [gwError, setGwError] = useState(null);
+  const [gwDiag, setGwDiag] = useState(null);
+  const [stockProducts, setStockProducts] = useState([]);
+  const [productChoices, setProductChoices] = useState({});
+  const [matchModal, setMatchModal] = useState(null); // { requestId, itemId, item, candidates }
 
   // ── 날짜 범위 상태 (기본 1달) ──────────────────────────────────
   const [dateRange, setDateRange] = useState(() => {
@@ -87,10 +152,37 @@ const WarehouseRequestList = ({ user, onGoHome }) => {
   const loadData = useCallback(async () => {
     try {
       setLoading(true);
-      const [resLocal, resGw] = await Promise.all([
+      const [resLocal, resGw, resGwHealth, resProducts] = await Promise.all([
         requestsAPI.getAll(),
-        gwRequestsAPI.getAll().catch(() => ({ data: [] }))
+        gwRequestsAPI.getAll().catch((err) => {
+          const message = err.response?.data?.error || err.message || '그룹웨어 요청 조회 실패';
+          setGwError(message);
+          return { data: [] };
+        }),
+        gwRequestsAPI.health().catch((err) => ({
+          data: {
+            ok: false,
+            error: err.response?.data?.error || err.message || '그룹웨어 상태 진단 실패',
+            code: err.response?.data?.code || null,
+            db: err.response?.data?.db || null,
+          }
+        })),
+        productsAPI.getAll(user?.warehouseId ? { warehouseId: Number(user.warehouseId) } : undefined).catch(() => ({ data: [] }))
       ]);
+      const productRows = resProducts.data || [];
+      setStockProducts(productRows);
+      if (resGw.data?.length >= 0) setGwError(null);
+      setGwDiag({
+        ...(resGwHealth.data || {}),
+        rows: Array.isArray(resGw.data) ? resGw.data.length : 0,
+        mappedCounts: Array.isArray(resGw.data)
+          ? resGw.data.reduce((acc, row) => {
+            const key = `${row.gwStatusName || row.gwStatusId || 'unknown'} / ${row.status || 'unknown'}`;
+            acc[key] = (acc[key] || 0) + 1;
+            return acc;
+          }, {})
+          : {},
+      });
 
       const byKey = new Map();
       const mergeRows = [...(resLocal.data || []), ...(resGw.data || [])];
@@ -118,7 +210,7 @@ const WarehouseRequestList = ({ user, onGoHome }) => {
         if (rowTs >= prevTs) byKey.set(key, row);
       });
 
-      const merged = Array.from(byKey.values()).sort((a, b) => {
+      const merged = Array.from(byKey.values()).map(r => refreshRequestProductMatches(r, productRows, productChoices)).sort((a, b) => {
         const ta = parseDateSafe(a.createdAt)?.getTime() || 0;
         const tb = parseDateSafe(b.createdAt)?.getTime() || 0;
         return tb - ta;
@@ -129,7 +221,7 @@ const WarehouseRequestList = ({ user, onGoHome }) => {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [user?.warehouseId, productChoices]);
 
   useEffect(() => {
     loadData();
@@ -199,21 +291,34 @@ const WarehouseRequestList = ({ user, onGoHome }) => {
     return true;
   });
 
+  // approved 또는 pending GW 요청 모두 출고 가능
+  const canProcess = (r) => r && (r.status === 'approved' || (r.isGw && r.status === 'pending'));
+
   const handleProcess = async () => {
-    if (!selReq || selReq.status !== 'approved') return;
-    
-    // GW 요청인 경우 품목 매핑 확인
-    if (selReq.isGw && (!selReq.items || !selReq.items[0]?.productId)) {
-      showToast('시스템 품목과 매핑되지 않은 GW 항목입니다. 관리자 메뉴에서 매핑을 먼저 완료하세요.', 'error');
+    if (!selReq || !canProcess(selReq)) return;
+
+    // GW 요청인 경우 품목 매핑 확인 (approved 상태에서만 items 배열이 있음)
+    if (!selReq.items || selReq.items.some(it => !it.matchedProductId && !it.productId)) {
+      showToast('출고할 시스템 품목을 먼저 선택하세요.', 'error');
+      setProc(false);
+      return;
+    }
+    const lacking = selReq.items.find(it => Number(it.matchedStock || 0) < Number(it.quantity || 0));
+    if (lacking) {
+      showToast(`${requestItemName(lacking, selReq)} 보유수량이 부족합니다.`, 'error');
       setProc(false);
       return;
     }
 
     try {
       setLoading(true);
-      // GW 요청인 경우 requestNumber를 ID로 사용 (백엔드 releases.js가 이를 처리함)
       const targetId = selReq.isGw ? selReq.requestNumber : selReq.id;
-      await releasesAPI.release(targetId, {});
+      const productSelections = {};
+      (selReq.items || []).forEach(it => {
+        const id = productChoices[itemChoiceKey(selReq, it)] || it.matchedProductId || it.productId;
+        if (id) productSelections[it.id] = id;
+      });
+      await releasesAPI.release(targetId, { productSelections });
       showToast(`${selReq.requestNumber} 출고 처리 완료`);
       await loadData();
       setSelId(null);
@@ -238,7 +343,7 @@ const WarehouseRequestList = ({ user, onGoHome }) => {
   };
 
   const openProcessFlow = () => {
-    if (!selReq || selReq.status !== 'approved') return;
+    if (!selReq || !canProcess(selReq)) return;
     const duplicates = findDuplicateReleased(selReq);
     if (duplicates.length > 0) {
       setDupCheck({ target: selReq, duplicates });
@@ -298,6 +403,7 @@ const WarehouseRequestList = ({ user, onGoHome }) => {
           <span style={{ fontSize: 24, fontWeight: 900, color: ORG }}>📋 요청목록</span>
           <span style={{ fontSize: 14, color: ORG, background: '#2d1800', border: `1px solid ${ORG}55`, borderRadius: 6, padding: '4px 12px', fontWeight: 700 }}>F4</span>
           {statCounts.approved > 0 && <span style={{ fontSize: 14, color: '#fff', background: ORG, borderRadius: 10, padding: '4px 12px', fontWeight: 800 }}>{statCounts.approved} 출고대기</span>}
+          {gwError && <span style={{ fontSize: 13, color: RED, background: '#2d0d0b', border: `1px solid ${RED}`, borderRadius: 8, padding: '4px 10px', fontWeight: 800 }}>GW 연결 오류</span>}
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 24 }}>
           <span style={{ fontSize: 18, color: TX2, fontFamily: 'monospace', fontWeight: 600 }}>{clock}</span>
@@ -329,6 +435,28 @@ const WarehouseRequestList = ({ user, onGoHome }) => {
         </div>
       </div>
 
+      {gwDiag && (
+        <div style={{ padding: '10px 32px', background: gwDiag.ok ? '#0d2616' : '#2d0d0b', borderBottom: `1px solid ${gwDiag.ok ? GRN : RED}55`, color: gwDiag.ok ? GRN : RED, fontSize: 12, fontWeight: 700, flexShrink: 0 }}>
+          <div style={{ display: 'flex', gap: 14, flexWrap: 'wrap', alignItems: 'center' }}>
+            <span>GW {gwDiag.ok ? '연결 정상' : '연결 실패'}</span>
+            <span>조회 {gwDiag.rows || 0}건</span>
+            {gwDiag.elapsedMs !== undefined && <span>{gwDiag.elapsedMs}ms</span>}
+            {gwDiag.error && <span>{gwDiag.code ? `[${gwDiag.code}] ` : ''}{gwDiag.error}</span>}
+            {gwDiag.db?.candidates?.[0] && (
+              <span>{gwDiag.db.candidates[0].host}:{gwDiag.db.candidates[0].port}/{gwDiag.db.candidates[0].database}</span>
+            )}
+          </div>
+          <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginTop: 6, color: TX2 }}>
+            {Object.entries(gwDiag.mappedCounts || {}).map(([k, v]) => (
+              <span key={k} style={{ background: BG2, border: `1px solid ${BD}`, borderRadius: 6, padding: '2px 7px' }}>{k}: {v}</span>
+            ))}
+            {gwDiag.ok && Object.keys(gwDiag.mappedCounts || {}).length === 0 && (
+              <span style={{ color: YLW }}>GW 연결은 됐지만 요청 데이터가 0건입니다.</span>
+            )}
+          </div>
+        </div>
+      )}
+
       {/* BODY */}
       <div style={{ flex: 1, display: 'flex', overflow: 'hidden' }}>
 
@@ -346,6 +474,7 @@ const WarehouseRequestList = ({ user, onGoHome }) => {
               const timeStr = dt ? `${String(dt.getHours()).padStart(2, '0')}:${String(dt.getMinutes()).padStart(2, '0')}` : '--:--';
               const dateStr = dt ? `${dt.getMonth() + 1}/${dt.getDate()}` : '-/-';
               const isUnmapped = r.isGw && (!r.items || !r.items[0]?.productId);
+              const src = sourceMeta(r);
 
               return (
                 <div key={r.id} onClick={() => setSelId(isSelected ? null : r.id)}
@@ -354,6 +483,7 @@ const WarehouseRequestList = ({ user, onGoHome }) => {
                   <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 10 }}>
                     <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
                       <span style={{ fontSize: 18, fontWeight: 800, color: r.isGw ? BLU : TX, fontFamily: 'monospace' }}>{requestTitle(r)}</span>
+                      {src && <span style={{ fontSize: 11, color: src.color, background: src.bg, border: `1px solid ${src.color}66`, borderRadius: 6, padding: '2px 7px', fontWeight: 800 }}>{src.label}</span>}
                       <span style={{ fontSize: 12, color: sm.color, background: sm.bg, border: `1px solid ${sm.color}55`, borderRadius: 6, padding: '2px 8px', fontWeight: 800 }}>{sm.label}</span>
                       {isUnmapped && <span style={{ fontSize: 11, color: '#fff', background: RED, borderRadius: 4, padding: '2px 6px', fontWeight: 700 }}>매핑필요</span>}
                     </div>
@@ -398,26 +528,41 @@ const WarehouseRequestList = ({ user, onGoHome }) => {
 
               {/* 아이템 목록 */}
               <div style={{ flex: 1, overflowY: 'auto' }}>
-                <div style={{ display: 'grid', gridTemplateColumns: '60px 1fr 120px 120px', background: BG2, borderBottom: `2px solid ${BD}`, padding: '0 32px' }}>
-                  {['#', '품목명', '요청수량', '현황'].map((h, i) => (
+                <div style={{ display: 'grid', gridTemplateColumns: '60px 1fr 120px 120px 120px', background: BG2, borderBottom: `2px solid ${BD}`, padding: '0 32px' }}>
+                  {['#', '품목명', '요청수량', '보유수량', '현황'].map((h, i) => (
                     <div key={h} style={{ padding: '15px 5px', fontSize: 14, fontWeight: 800, color: TX2, textAlign: i >= 2 ? 'right' : 'left' }}>{h}</div>
                   ))}
                 </div>
                 {(selReq.items || []).map((it, i) => {
-                  const isUnmapped = selReq.isGw && !it.productId;
+                  const isUnmapped = !it.matchedProductId && !it.productId;
+                  const stockQty = Number(it.matchedStock || 0);
+                  const reqQty = Number(it.quantity || 0);
+                  const stockOk = stockQty >= reqQty;
                   return (
-                    <div key={it.id} style={{ display: 'grid', gridTemplateColumns: '60px 1fr 120px 120px', padding: '0 32px', borderBottom: `2px solid ${BD2}`, background: i % 2 === 0 ? BG0 : BG1, minHeight: 90 }}>
+                    <div key={it.id} style={{ display: 'grid', gridTemplateColumns: '60px 1fr 120px 120px 120px', padding: '0 32px', borderBottom: `2px solid ${BD2}`, background: i % 2 === 0 ? BG0 : BG1, minHeight: 90 }}>
                       <div style={{ padding: '30px 5px', fontSize: 14, color: TX3 }}>{i + 1}</div>
                       <div style={{ padding: '20px 5px' }}>
                         <div style={{ display:'flex', alignItems:'center', gap:10 }}>
-                          <div style={{ fontSize: 18, fontWeight: 700, color: isUnmapped ? RED : TX }}>{it.Product?.productName || '품목정보없음'}</div>
-                          {isUnmapped && <span style={{ fontSize: 11, color: RED, background: '#2d0d0b', border: `1px solid ${RED}`, borderRadius: 4, padding: '2px 6px', fontWeight: 700 }}>매핑 필요</span>}
+                          <button
+                            onClick={() => it.matchCandidates?.length > 0 && setMatchModal({ requestId: selReq.id, itemId: it.id, item: it, candidates: it.matchCandidates })}
+                            disabled={!it.matchCandidates?.length}
+                            style={{ background: 'none', border: 'none', padding: 0, color: isUnmapped ? RED : TX, cursor: it.matchCandidates?.length ? 'pointer' : 'default', fontSize: 18, fontWeight: 700, textAlign: 'left' }}>
+                            {productLabel(it.Product) || '품목정보없음'}
+                          </button>
+                          {it.hasMultipleMatches && <span style={{ fontSize: 11, color: BLU, background: '#0d2044', border: `1px solid ${BLU}`, borderRadius: 4, padding: '2px 6px', fontWeight: 700 }}>선택 가능</span>}
+                          {isUnmapped && <span style={{ fontSize: 11, color: RED, background: '#2d0d0b', border: `1px solid ${RED}`, borderRadius: 4, padding: '2px 6px', fontWeight: 700 }}>매칭 없음</span>}
                         </div>
-                        <div style={{ fontSize: 14, color: TX2, marginTop: 4 }}>{it.Product?.productCode || '—'} · {it.Product?.unit || '개'}</div>
+                        <div style={{ fontSize: 14, color: TX2, marginTop: 4 }}>
+                          {it.Product?.productCode || '—'} · {it.Product?.unit || '개'}
+                          {it.requestedProductName && it.Product?.productName !== it.requestedProductName && (
+                            <span style={{ color: TX3 }}> · 요청명: {it.requestedProductName}</span>
+                          )}
+                        </div>
                       </div>
                       <div style={{ padding: '30px 5px', textAlign: 'right', fontSize: 22, fontWeight: 900, color: ORG }}>{it.quantity}</div>
+                      <div style={{ padding: '30px 5px', textAlign: 'right', fontSize: 22, fontWeight: 900, color: stockOk ? GRN : RED }}>{stockQty.toLocaleString()}</div>
                       <div style={{ padding: '30px 5px', textAlign: 'right', fontSize: 16, fontWeight: 700, color: selReq.status === 'released' ? GRN : TX3 }}>
-                        {selReq.status === 'released' ? '출고완료' : '대기중'}
+                        {selReq.status === 'released' ? '출고완료' : stockOk ? '출고가능' : '재고부족'}
                       </div>
                     </div>
                   );
@@ -431,9 +576,23 @@ const WarehouseRequestList = ({ user, onGoHome }) => {
                     ✅ 이미 출고가 완료된 요청입니다.
                   </div>
                 ) : selReq.status === 'pending' ? (
-                  <div style={{ textAlign: 'center', padding: '20px', background: BG2, border: `2px solid ${BD}`, borderRadius: 12, color: TX2, fontSize: 18, fontWeight: 700 }}>
-                    ⏳ 관리자의 승인이 필요한 요청입니다.
-                  </div>
+                  selReq.isGw ? (
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+                      <div style={{ padding: '14px 20px', background: '#1a1008', border: `1px solid ${ORG}44`, borderRadius: 10, color: TX2, fontSize: 14, fontWeight: 600 }}>
+                        ⚠️ 그룹웨어 승인 대기 중입니다. 아래 버튼으로 관리자가 직접 출고할 수 있습니다.
+                      </div>
+                      <button onClick={openProcessFlow}
+                        style={{ width: '100%', padding: '22px', fontSize: 22, fontWeight: 900,
+                          background: 'linear-gradient(135deg, #1a3a6a, #2060cc)', border: `2px solid ${BLU}`,
+                          color: '#fff', borderRadius: 15, cursor: 'pointer', boxShadow: '0 8px 24px rgba(88,166,255,0.25)' }}>
+                        🏢 운영자 출고 처리
+                      </button>
+                    </div>
+                  ) : (
+                    <div style={{ textAlign: 'center', padding: '20px', background: BG2, border: `2px solid ${BD}`, borderRadius: 12, color: TX2, fontSize: 18, fontWeight: 700 }}>
+                      ⏳ 관리자의 승인이 필요한 요청입니다.
+                    </div>
+                  )
                 ) : selReq.status === 'rejected' ? (
                    <div style={{ textAlign: 'center', padding: '20px', background: '#2d0d0b', border: `2px solid ${RED}`, borderRadius: 12, color: RED, fontSize: 18, fontWeight: 800 }}>
                     ❌ 반려된 요청입니다.
@@ -452,6 +611,55 @@ const WarehouseRequestList = ({ user, onGoHome }) => {
         </div>
       </div>
 
+      {matchModal && (
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.7)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 2100 }}
+          onClick={e => e.target === e.currentTarget && setMatchModal(null)}>
+          <div style={{ width: 620, maxHeight: '78vh', overflow: 'hidden', background: BG1, border: `2px solid ${BLU}`, borderRadius: 12, boxShadow: '0 18px 50px rgba(0,0,0,0.55)' }}>
+            <div style={{ padding: '18px 20px', borderBottom: `1px solid ${BD2}`, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <div>
+                <div style={{ fontSize: 18, color: TX, fontWeight: 900 }}>출고 품목 선택</div>
+                <div style={{ fontSize: 13, color: TX2, marginTop: 4 }}>
+                  요청명: {matchModal.item?.requestedProductName || matchModal.item?.Product?.productName} · 요청수량 {matchModal.item?.quantity} {matchModal.item?.Product?.unit || '개'}
+                </div>
+              </div>
+              <button onClick={() => setMatchModal(null)} style={{ background: BG2, border: `1px solid ${BD}`, color: TX2, borderRadius: 6, padding: '6px 10px', cursor: 'pointer' }}>닫기</button>
+            </div>
+            <div style={{ maxHeight: '58vh', overflowY: 'auto' }}>
+              {matchModal.candidates.map(p => {
+                const qty = Number(matchModal.item?.quantity || 0);
+                const stock = Number(p.currentStock || 0);
+                const ok = stock >= qty;
+                const selected = Number(matchModal.item?.matchedProductId) === Number(p.id);
+                return (
+                  <button key={p.id}
+                    onClick={() => {
+                      const choiceKey = `${matchModal.requestId}:${matchModal.itemId}`;
+                      setProductChoices(prev => ({ ...prev, [choiceKey]: p.id }));
+                      setRequests(prev => prev.map(r => {
+                        if (String(r.id) !== String(matchModal.requestId)) return r;
+                        return refreshRequestProductMatches(r, stockProducts, { ...productChoices, [choiceKey]: p.id });
+                      }));
+                      setMatchModal(null);
+                    }}
+                    style={{
+                      width: '100%', display: 'grid', gridTemplateColumns: '1fr 110px 90px', gap: 12,
+                      alignItems: 'center', padding: '14px 18px', border: 'none', borderBottom: `1px solid ${BD2}`,
+                      background: selected ? '#0d2040' : BG1, cursor: 'pointer', textAlign: 'left',
+                    }}>
+                    <div>
+                      <div style={{ color: TX, fontSize: 15, fontWeight: 800 }}>{productLabel(p)}</div>
+                      <div style={{ color: TX2, fontSize: 12, marginTop: 3 }}>{p.productCode || '—'} · {p.unit || '개'}</div>
+                    </div>
+                    <div style={{ color: ok ? GRN : RED, fontSize: 20, fontWeight: 900, textAlign: 'right' }}>{stock.toLocaleString()}</div>
+                    <div style={{ color: ok ? GRN : RED, fontSize: 12, fontWeight: 800, textAlign: 'right' }}>{ok ? '출고가능' : '재고부족'}</div>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* BOTTOM */}
       <div style={{ height: 54, background: '#010409', borderTop: `2px solid ${BD2}`, display: 'flex', alignItems: 'center', gap: 24, padding: '0 32px', flexShrink: 0 }}>
         {[['F4', '요청목록'], ['ESC', '홈으로']].map(([k, l]) => (
@@ -469,16 +677,23 @@ const WarehouseRequestList = ({ user, onGoHome }) => {
       {/* 출고 처리 확인 모달 */}
       {processing && selReq && (
         <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.85)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 5000 }}>
-          <div style={{ background: BG1, border: `3px solid ${ORG}`, borderRadius: 24, padding: '40px', width: 600 }}>
-            <div style={{ fontSize: 24, fontWeight: 900, color: ORG, marginBottom: 12 }}>📤 출고 처리 최종 확인</div>
+          <div style={{ background: BG1, border: `3px solid ${selReq.isGw && selReq.status === 'pending' ? BLU : ORG}`, borderRadius: 24, padding: '40px', width: 600 }}>
+            <div style={{ fontSize: 24, fontWeight: 900, color: selReq.isGw && selReq.status === 'pending' ? BLU : ORG, marginBottom: 12 }}>
+              {selReq.isGw && selReq.status === 'pending' ? '🏢 운영자 출고 최종 확인' : '📤 출고 처리 최종 확인'}
+            </div>
             <div style={{ fontSize: 18, color: TX2, marginBottom: 24, lineHeight: 1.6 }}>
               <b style={{color:TX}}>{requestTitle(selReq)}</b> 건을 출고하시겠습니까?<br/>
-              확인 즉시 전산 재고가 차감됩니다.
+              {selReq.isGw && selReq.status === 'pending'
+                ? '확인 즉시 재고가 차감되고 그룹웨어에 운영자 출고가 처리됩니다.'
+                : '확인 즉시 전산 재고가 차감됩니다.'}
             </div>
             <div style={{ background: BG2, borderRadius: 15, padding: '20px', marginBottom: 30, maxHeight: 300, overflowY: 'auto' }}>
               {(selReq.items || []).map(it => (
                 <div key={it.id} style={{ display: 'flex', justifyContent: 'space-between', padding: '12px 0', borderBottom: `1px solid ${BD2}` }}>
-                  <span style={{ fontSize: 16, color: TX, fontWeight: 700 }}>{it.Product?.productName}</span>
+                  <span style={{ fontSize: 16, color: TX, fontWeight: 700 }}>
+                    <span>{it.Product?.productName}</span>
+                    {it.Product?.specification && <span style={{ display: 'block', color: TX2, fontSize: 12, marginTop: 2 }}>{it.Product.specification}</span>}
+                  </span>
                   <span style={{ fontSize: 18, fontWeight: 900, color: ORG }}>{it.quantity} {it.Product?.unit || '개'}</span>
                 </div>
               ))}

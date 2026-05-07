@@ -15,6 +15,7 @@ const resolveApiBaseUrl = () => {
   if (fromEnv) return fromEnv;
 
   if (typeof window !== 'undefined') {
+    if (window.location?.port === '5000') return '/api';
     const fromSavedServer = normalizeApiBase(window.localStorage?.getItem(LS_SERVER));
     if (fromSavedServer) return fromSavedServer;
   }
@@ -30,7 +31,7 @@ const getAuthHeader = () => {
 };
 
 const dashboardAPI = {
-  getStats: () => axios.get(`${API_BASE_URL}/dashboard/stats`, { headers: getAuthHeader() }),
+  getStats: (params) => axios.get(`${API_BASE_URL}/dashboard/stats`, { headers: getAuthHeader(), params }),
   getLowStockAlerts: (params) => axios.get(`${API_BASE_URL}/dashboard/alerts/low-stock`, { headers: getAuthHeader(), params }),
 };
 
@@ -50,6 +51,7 @@ const requestsAPI = {
 
 const gwRequestsAPI = {
   getAll: () => axios.get(`${API_BASE_URL}/gw-requests`, { headers: getAuthHeader() }),
+  health: () => axios.get(`${API_BASE_URL}/gw-requests/health`, { headers: getAuthHeader() }),
 };
 
 const approvalsAPI = {
@@ -67,7 +69,8 @@ const releasesAPI = {
 const reportsAPI = {
   getStats: () => axios.get(`${API_BASE_URL}/reports/stats`, { headers: getAuthHeader() }),
   getCategoryStats: () => axios.get(`${API_BASE_URL}/reports/category-stats`, { headers: getAuthHeader() }),
-  getDailyStats: (date) => axios.get(`${API_BASE_URL}/reports/daily-stats?date=${date}`, { headers: getAuthHeader() })
+  getDailyStats: (date) => axios.get(`${API_BASE_URL}/reports/daily-stats?date=${date}`, { headers: getAuthHeader() }),
+  getWarehouseSummary: (params) => axios.get(`${API_BASE_URL}/reports/warehouse-summary`, { headers: getAuthHeader(), params })
 };
 
 const usersAPI = {
@@ -84,10 +87,14 @@ const productsAPI = {
   getById: (id) => axios.get(`${API_BASE_URL}/products/${id}`, { headers: getAuthHeader() }),
   create: (data) => axios.post(`${API_BASE_URL}/products`, data, { headers: getAuthHeader() }),
   update: (id, data) => axios.put(`${API_BASE_URL}/products/${id}`, data, { headers: getAuthHeader() }),
+  adjustStock: (id, data) => axios.post(`${API_BASE_URL}/products/${id}/adjust-stock`, data, { headers: getAuthHeader() }),
   delete: (id) => axios.delete(`${API_BASE_URL}/products/${id}`, { headers: getAuthHeader() }),
   restore: (id) => axios.put(`${API_BASE_URL}/products/${id}/restore`, {}, { headers: getAuthHeader() }),
   deletePermanent: (id) => axios.delete(`${API_BASE_URL}/products/${id}/permanent`, { headers: getAuthHeader() }),
   checkDuplicate: (data) => axios.post(`${API_BASE_URL}/products/check-duplicate`, data, { headers: getAuthHeader() }),
+  generateBarcode: () => axios.get(`${API_BASE_URL}/products/next-barcode`, { headers: getAuthHeader() }),
+  printLabel: (data) => axios.post(`${API_BASE_URL}/products/print-label`, data, { headers: getAuthHeader() }),
+  printCommandLabel: (data) => axios.post(`${API_BASE_URL}/products/print-command-label`, data, { headers: getAuthHeader() }),
   recalculateSafetyStock: (data = {}) => axios.post(`${API_BASE_URL}/products/recalculate-safety-stock`, data, { headers: getAuthHeader() }),
   uploadCSV: (file) => {
     const formData = new FormData();
@@ -104,6 +111,14 @@ const warehousesAPI = {
   create: (data) => axios.post(`${API_BASE_URL}/warehouses`, data, { headers: getAuthHeader() }),
   update: (id, data) => axios.put(`${API_BASE_URL}/warehouses/${id}`, data, { headers: getAuthHeader() }),
   delete: (id) => axios.delete(`${API_BASE_URL}/warehouses/${id}`, { headers: getAuthHeader() })
+};
+
+const noticesAPI = {
+  getAll: () => axios.get(`${API_BASE_URL}/notices`, { headers: getAuthHeader() }),
+  getActive: (params) => axios.get(`${API_BASE_URL}/notices/active`, { headers: getAuthHeader(), params }),
+  create: (data) => axios.post(`${API_BASE_URL}/notices`, data, { headers: getAuthHeader() }),
+  update: (id, data) => axios.put(`${API_BASE_URL}/notices/${id}`, data, { headers: getAuthHeader() }),
+  delete: (id) => axios.delete(`${API_BASE_URL}/notices/${id}`, { headers: getAuthHeader() }),
 };
 
 const requestItemsAPI = {
@@ -200,6 +215,10 @@ const dbConfigAPI = {
   save: (data) => axios.put(`${API_BASE_URL}/system/db-config`, data, { headers: getAuthHeader() }),
 };
 
+const updateAPI = {
+  check: () => axios.get(`${API_BASE_URL}/update/check`),
+};
+
 export {
   dashboardAPI,
   authAPI,
@@ -210,6 +229,7 @@ export {
   usersAPI,
   productsAPI,
   warehousesAPI,
+  noticesAPI,
   requestItemsAPI,
   stockHistoryAPI,
   inboundAPI,
@@ -221,7 +241,8 @@ export {
   productsQuickAdd,
   gwMappingAPI,
   dbConfigAPI,
-  gwRequestsAPI
+  gwRequestsAPI,
+  updateAPI
 };
 
 const api = {
@@ -234,6 +255,7 @@ const api = {
   usersAPI,
   productsAPI,
   warehousesAPI,
+  noticesAPI,
   requestItemsAPI,
   stockHistoryAPI,
   inboundAPI,
@@ -245,7 +267,8 @@ const api = {
   productsQuickAdd,
   gwMappingAPI,
   dbConfigAPI,
-  gwRequestsAPI
+  gwRequestsAPI,
+  updateAPI
 };
 
 export default api;

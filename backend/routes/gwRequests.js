@@ -1,9 +1,122 @@
 const express = require('express');
 const { Op } = require('sequelize');
 const { auth } = require('../middleware/auth');
-const { query } = require('../config/groupwareDb');
+const { query, getConnectionInfo } = require('../config/groupwareDb');
 
 const router = express.Router();
+const GW_APPROVED_STATUS_IDS = new Set([68, 49]);
+const GW_RELEASED_STATUS_IDS = new Set([111, 157]);
+
+function summarizeRows(rows, keyFn) {
+  const counts = {};
+  rows.forEach(row => {
+    const key = keyFn(row);
+    counts[key] = (counts[key] || 0) + 1;
+  });
+  return counts;
+}
+
+function mapGwStatus(statusId, statusName, localStatus = null) {
+  const sId = parseInt(statusId, 10);
+  const name = String(statusName || '').trim();
+
+  // GW 원본 상태를 우선한다. 완료취소 등으로 GW 문서가 다시 신청/대기 상태가 되면
+  // 로컬 WMS에 남아 있는 released 기록 때문에 완료 목록에 계속 남지 않도록 한다.
+  if (GW_RELEASED_STATUS_IDS.has(sId) || /(?:출고|지급).*완료/.test(name)) return 'released';
+  if (GW_APPROVED_STATUS_IDS.has(sId) || /^(?:승인|지급승인)$/.test(name)) return 'approved';
+  if (sId === 140 || /(?:신청|승인대기|대기)/.test(name)) return 'pending';
+  if (/반려/.test(name)) return 'rejected';
+
+  if (localStatus) return localStatus;
+  return null;
+}
+
+async function syncProductTotalStock(Product, ProductWarehouseStock, productId, transaction) {
+  const total = Number(await ProductWarehouseStock.sum('currentStock', { where: { productId }, transaction })) || 0;
+  await Product.update({ currentStock: total }, { where: { id: productId }, transaction });
+}
+
+async function restoreReleasedGwRequest(request, nextStatus, transaction) {
+  const { Request, StockHistory, Product, ProductWarehouseStock } = global.sequelize.models;
+  const histories = await StockHistory.findAll({
+    where: {
+      reference: request.requestNumber,
+      referenceType: 'request',
+      type: 'outbound',
+      [Op.or]: [
+        { notes: null },
+        { notes: { [Op.notLike]: '%GW 완료취소 감지로 재고 복구 처리%' } },
+      ],
+    },
+    transaction,
+  });
+
+  for (const h of histories) {
+    const productId = h.productId;
+    const qty = Number(h.quantity) || 0;
+    const warehouseId = h.warehouseId ? parseInt(h.warehouseId, 10) : null;
+    if (!productId || qty <= 0) continue;
+
+    if (warehouseId) {
+      const [row] = await ProductWarehouseStock.findOrCreate({
+        where: { productId, warehouseId },
+        defaults: { productId, warehouseId, currentStock: 0, safetyStock: 0 },
+        transaction,
+      });
+      const before = parseInt(row.currentStock, 10) || 0;
+      await row.update({ currentStock: before + qty }, { transaction });
+      await syncProductTotalStock(Product, ProductWarehouseStock, productId, transaction);
+    } else {
+      const product = await Product.findByPk(productId, { transaction });
+      if (!product) continue;
+      const before = parseInt(product.currentStock, 10) || 0;
+      await product.update({ currentStock: before + qty }, { transaction });
+    }
+
+    await h.update({
+      notes: `${h.notes || ''}\nGW 완료취소 감지로 재고 복구 처리`,
+    }, { transaction });
+  }
+
+  await Request.update({
+    status: nextStatus,
+    releaserId: null,
+    releasedAt: null,
+  }, { where: { id: request.id }, transaction });
+}
+
+router.get('/health', auth, async (req, res) => {
+  try {
+    const started = Date.now();
+    const dbRes = await query(`
+      SELECT d.status_id, s.name, COUNT(*)::int AS count
+      FROM go_applet_docs d
+      JOIN go_applet_statuses s ON d.status_id = s.id
+      WHERE d.applet_id = 22
+      GROUP BY d.status_id, s.name
+      ORDER BY d.status_id
+    `);
+
+    res.json({
+      ok: true,
+      elapsedMs: Date.now() - started,
+      db: {
+        candidates: getConnectionInfo(),
+      },
+      statuses: dbRes.rows,
+    });
+  } catch (err) {
+    console.error('GW health error:', err);
+    res.status(500).json({
+      ok: false,
+      error: err.message,
+      code: err.code || null,
+      db: {
+        candidates: getConnectionInfo(),
+      },
+    });
+  }
+});
 
 // Get requests from Groupware (Applet 22)
 router.get('/', auth, async (req, res) => {
@@ -21,7 +134,6 @@ router.get('/', auth, async (req, res) => {
       JOIN go_applet_statuses s ON d.status_id = s.id
       JOIN go_users u ON d.created_by_id = u.id
       WHERE d.applet_id = 22 
-        AND d.status_id IN (140, 68, 111, 157)
       ORDER BY d.created_at DESC 
       LIMIT 1000
     `);
@@ -30,6 +142,10 @@ router.get('/', auth, async (req, res) => {
       const ta = new Date(a.created_at || 0).getTime();
       const tb = new Date(b.created_at || 0).getTime();
       return tb - ta;
+    });
+    console.log('[GW Requests] fetched docs:', {
+      total: docs.length,
+      rawStatusCounts: summarizeRows(docs, d => `${d.status_id}:${d.status_name || ''}`),
     });
     
     // 2. Fetch values for these docs (Applet 22)
@@ -122,12 +238,34 @@ router.get('/', auth, async (req, res) => {
           [Op.like]: 'GW-%'
         }
       },
-      attributes: ['requestNumber', 'status']
+      attributes: ['id', 'requestNumber', 'status']
     });
     const localStatusMap = {};
     localRequests.forEach(r => {
       localStatusMap[r.requestNumber] = r.status;
     });
+    const localRequestMap = {};
+    localRequests.forEach(r => {
+      localRequestMap[r.requestNumber] = r;
+    });
+
+    const tx = await global.sequelize.transaction();
+    try {
+      for (const d of docs) {
+        const gwReqNum = `GW-${d.id}`;
+        const local = localRequestMap[gwReqNum];
+        if (!local || local.status !== 'released') continue;
+        const gwStatus = mapGwStatus(parseInt(d.status_id, 10), d.status_name, null);
+        if (gwStatus && gwStatus !== 'released') {
+          await restoreReleasedGwRequest(local, gwStatus, tx);
+          localStatusMap[gwReqNum] = gwStatus;
+        }
+      }
+      await tx.commit();
+    } catch (e) {
+      await tx.rollback();
+      throw e;
+    }
 
     // 4. Format for frontend
     const formatted = docs.map(d => {
@@ -137,22 +275,8 @@ router.get('/', auth, async (req, res) => {
       const app26Item = applet26Map[norm(itemName)] || {};
       const sId = parseInt(d.status_id); // Ensure sId is a number for comparison
       
-      // Mapping logic:
-      // status_id 68 -> 'approved' (Ready for release)
-      // status_id 140 -> 'pending' (Waiting for approval/action)
-      // status_id 111, 157 -> 'released'
-      let status = localStatusMap[gwReqNum];
-      if (!status) {
-        if ([111, 157].includes(sId)) {
-          status = 'released';
-        } else if (sId === 68) {
-          status = 'approved';
-        } else if (sId === 140) {
-          status = 'pending';
-        } else {
-          status = 'pending'; // Default
-        }
-      }
+      const status = mapGwStatus(sId, d.status_name, localStatusMap[gwReqNum]);
+      if (!status) return null;
       
       const regionVal = String(vals['_qiv4azya2'] ?? ''); // 구분 필드 (_qiv4azya2)
       let targetWarehouseId = null;
@@ -199,6 +323,11 @@ router.get('/', auth, async (req, res) => {
           }
         ]
       };
+    }).filter(Boolean);
+
+    console.log('[GW Requests] formatted rows:', {
+      total: formatted.length,
+      mappedStatusCounts: summarizeRows(formatted, r => `${r.gwStatusId}:${r.gwStatusName || ''}:${r.status}`),
     });
 
     res.json(formatted);

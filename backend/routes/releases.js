@@ -1,9 +1,111 @@
 const express = require('express');
 const { Op } = require('sequelize');
 const { auth, roleAuth } = require('../middleware/auth');
-const { runGwDocAction } = require('../services/gwDocAutomation');
+const { completeGwDocRelease } = require('../services/gwDocAutomation');
 
 const router = express.Router();
+
+function normName(v) {
+  return String(v || '').trim().replace(/\s+/g, ' ').toLowerCase();
+}
+
+function selectedProductIdFor(body, keys = []) {
+  const selections = body?.productSelections || body?.itemProductIds || {};
+  for (const key of keys) {
+    const v = selections[key];
+    const id = parseInt(v, 10);
+    if (Number.isInteger(id) && id > 0) return id;
+  }
+  const fallback = parseInt(body?.productId, 10);
+  return Number.isInteger(fallback) && fallback > 0 ? fallback : null;
+}
+
+async function warehouseQty(ProductWarehouseStock, productId, warehouseId, transaction) {
+  if (!warehouseId) return null;
+  const row = await ProductWarehouseStock.findOne({ where: { productId, warehouseId }, transaction });
+  return row ? (parseInt(row.currentStock, 10) || 0) : 0;
+}
+
+async function totalWarehouseQty(ProductWarehouseStock, productId, transaction) {
+  const rows = await ProductWarehouseStock.findAll({ where: { productId }, attributes: ['currentStock'], transaction });
+  return rows.reduce((sum, row) => sum + (parseInt(row.currentStock, 10) || 0), 0);
+}
+
+async function deductProductStock({ Product, ProductWarehouseStock, product, quantity, warehouseId, transaction }) {
+  const qty = Number(quantity) || 0;
+  if (qty <= 0) throw new Error('출고 수량을 확인해주세요');
+
+  const scopedQty = await warehouseQty(ProductWarehouseStock, product.id, warehouseId, transaction);
+  const available = scopedQty === null ? (parseInt(product.currentStock, 10) || 0) : scopedQty;
+  if (available < qty) {
+    throw new Error(`재고 부족: ${product.productName}(보유: ${available}, 필요: ${qty})`);
+  }
+
+  let pwsBefore = null;
+  if (warehouseId) {
+    const [pws] = await ProductWarehouseStock.findOrCreate({
+      where: { productId: product.id, warehouseId },
+      defaults: { productId: product.id, warehouseId, currentStock: 0, safetyStock: 0 },
+      transaction,
+    });
+    pwsBefore = parseInt(pws.currentStock, 10) || 0;
+    await pws.update({ currentStock: pwsBefore - qty }, { transaction });
+  }
+
+  const totalBefore = parseInt(product.currentStock, 10) || 0;
+  const totalAfter = warehouseId
+    ? await totalWarehouseQty(ProductWarehouseStock, product.id, transaction)
+    : totalBefore - qty;
+  await Product.update({ currentStock: totalAfter }, { where: { id: product.id }, transaction });
+
+  return { balanceBefore: warehouseId ? pwsBefore : totalBefore, balanceAfter: warehouseId ? pwsBefore - qty : totalAfter };
+}
+
+async function chooseReleaseProduct({ Product, ProductWarehouseStock, products, requestedName, quantity, warehouseId, selectedProductId, transaction }) {
+  const requestedKey = normName(requestedName);
+  let candidates = Array.isArray(products) ? products.filter(Boolean) : [];
+
+  if (selectedProductId) {
+    const selected = await Product.findByPk(selectedProductId, { transaction });
+    if (!selected) throw new Error('선택한 출고 품목이 존재하지 않습니다');
+    if (requestedKey && normName(selected.productName) !== requestedKey) {
+      throw new Error(`선택한 품목명이 요청 품목명과 다릅니다: ${selected.productName}`);
+    }
+    candidates = [selected, ...candidates.filter(p => Number(p.id) !== Number(selected.id))];
+  }
+
+  if (requestedKey) {
+    const sameName = await Product.findAll({
+      where: { productName: requestedName, isActive: true },
+      transaction,
+    });
+    const seen = new Set(candidates.map(p => Number(p.id)));
+    sameName.forEach(p => { if (!seen.has(Number(p.id))) candidates.push(p); });
+  }
+
+  if (!candidates.length) throw new Error(`출고 품목을 찾을 수 없습니다: "${requestedName}"`);
+
+  const withStock = [];
+  for (const p of candidates) {
+    const wh = await warehouseQty(ProductWarehouseStock, p.id, warehouseId, transaction);
+    const stock = wh === null ? (parseInt(p.currentStock, 10) || 0) : wh;
+    withStock.push({ product: p, stock });
+  }
+
+  withStock.sort((a, b) => {
+    const aEnough = a.stock >= quantity ? 1 : 0;
+    const bEnough = b.stock >= quantity ? 1 : 0;
+    if (aEnough !== bEnough) return bEnough - aEnough;
+    return b.stock - a.stock;
+  });
+
+  const best = withStock[0];
+  if (!best || best.stock < quantity) {
+    const name = best?.product?.productName || requestedName;
+    throw new Error(`재고 부족: ${name}(보유: ${best?.stock || 0}, 필요: ${quantity})`);
+  }
+  return best.product;
+}
 
 // Get approved requests for release
 router.get('/approved', auth, roleAuth(['warehouse', 'releaser', 'admin', 'dept_admin']), async (req, res) => {
@@ -17,7 +119,7 @@ router.get('/approved', auth, roleAuth(['warehouse', 'releaser', 'admin', 'dept_
         {
           model: RequestItem,
           as: 'items',
-          include: [{ model: Product, attributes: ['productCode', 'productName', 'unit', 'currentStock'] }]
+          include: [{ model: Product, attributes: ['productCode', 'productName', 'specification', 'unit', 'currentStock'] }]
         }
       ]
     });
@@ -134,10 +236,9 @@ router.put('/:id/reject', auth, roleAuth(['warehouse', 'releaser', 'admin', 'dep
 router.put('/:id/release', auth, roleAuth(['warehouse', 'releaser', 'admin', 'dept_admin']), async (req, res) => {
   const sequelize = global.sequelize;
   const transaction = await sequelize.transaction();
-  const { Request, RequestItem, Product, StockHistory, GwProductMapping } = sequelize.models;
+  const { Request, RequestItem, Product, StockHistory, GwProductMapping, ProductWarehouseStock } = sequelize.models;
   const { query } = require('../config/groupwareDb');
   let gwActionResult = null;
-  let gwActionError = null;
   let gwDocIdForAction = null;
 
   try {
@@ -151,10 +252,6 @@ router.put('/:id/release', auth, roleAuth(['warehouse', 'releaser', 'admin', 'de
       
       // 1. 이미 처리되었는지 확인
       const existing = await Request.findOne({ where: { requestNumber: req.params.id }, transaction });
-      if (existing) {
-        await transaction.rollback();
-        return res.status(400).json({ error: '이미 출고된 GW 요청입니다' });
-      }
 
       // 2. GW DB에서 데이터 가져오기
       const docRes = await query(`
@@ -210,34 +307,33 @@ router.put('/:id/release', auth, roleAuth(['warehouse', 'releaser', 'admin', 'de
         LIMIT 200
       `, [itemName]);
 
-      if (app26Res.rows.length === 0) {
-        await transaction.rollback();
-        return res.status(400).json({ error: `GW 품목 매핑 실패: "${itemName}" (Applet 26에서 찾을 수 없음)` });
-      }
-
       const candidateDocIds = app26Res.rows.map(r => String(r.id));
-      const mappings = await GwProductMapping.findAll({
-        where: { gwDocId: { [Op.in]: candidateDocIds } },
-        order: [['updatedAt', 'DESC']],
-        transaction
-      });
+      const mappings = candidateDocIds.length > 0
+        ? await GwProductMapping.findAll({
+          where: { gwDocId: { [Op.in]: candidateDocIds } },
+          order: [['updatedAt', 'DESC']],
+          transaction
+        })
+        : [];
       // 후보 중 매핑이 있는 문서를 우선 선택
-      const mapping = mappings.find(m => candidateDocIds.includes(String(m.gwDocId))) || null;
-
-      if (!mapping) {
-        await transaction.rollback();
-        return res.status(400).json({ error: `GW 품목 매핑 필요: "${itemName}" (시스템 품목과 연결되어 있지 않음)` });
+      const mappedProducts = [];
+      for (const m of mappings.filter(m => candidateDocIds.includes(String(m.gwDocId)))) {
+        const mapped = await Product.findByPk(m.productId, { transaction });
+        if (mapped) mappedProducts.push(mapped);
       }
 
-      const product = await Product.findByPk(mapping.productId, { transaction });
-      if (!product) {
-        await transaction.rollback();
-        return res.status(400).json({ error: '매핑된 시스템 품목이 존재하지 않습니다' });
-      }
-      if (product.currentStock < quantity) {
-        await transaction.rollback();
-        return res.status(400).json({ error: `재고 부족: ${product.productName}(현재: ${product.currentStock}, 필요: ${quantity})` });
-      }
+      if (!existing) {
+      const selectedProductId = selectedProductIdFor(req.body, [`item-GW-${gwId}`, `GW-${gwId}`, gwId]);
+      const product = await chooseReleaseProduct({
+        Product,
+        ProductWarehouseStock,
+        products: mappedProducts,
+        requestedName: itemName,
+        quantity,
+        warehouseId: targetWarehouseId,
+        selectedProductId,
+        transaction,
+      });
 
       // 4. 로컬 Request 생성 (released 상태로 바로 생성)
       request = await Request.create({
@@ -247,6 +343,7 @@ router.put('/:id/release', auth, roleAuth(['warehouse', 'releaser', 'admin', 'de
         description: vals['_tyziwi30c'] || '',
         quantity: quantity,
         amount: parseFloat(product.unitPrice) * quantity,
+        warehouseId: targetWarehouseId,
         applicantId: req.user.id, // 실제로는 GW 사용자 정보 매핑 필요
         status: 'released',
         releaserId: req.user.id,
@@ -263,9 +360,14 @@ router.put('/:id/release', auth, roleAuth(['warehouse', 'releaser', 'admin', 'de
       }, { transaction });
 
       // 6. 재고 차감 및 히스토리
-      const balanceBefore = product.currentStock;
-      const balanceAfter = balanceBefore - quantity;
-      await product.update({ currentStock: balanceAfter }, { transaction });
+      const { balanceBefore, balanceAfter } = await deductProductStock({
+        Product,
+        ProductWarehouseStock,
+        product,
+        quantity,
+        warehouseId: targetWarehouseId,
+        transaction,
+      });
 
       await StockHistory.create({
         productId: product.id,
@@ -276,9 +378,128 @@ router.put('/:id/release', auth, roleAuth(['warehouse', 'releaser', 'admin', 'de
         reference: req.params.id,
         referenceType: 'request',
         userId: req.user.id,
+        warehouseId: targetWarehouseId,
         reason: `GW 출고: ${req.params.id}`,
         notes: `GW문서: ${gwId}, 신청자: ${docRes.rows[0].user_name}`
       }, { transaction });
+      } else {
+        if (existing.status !== 'released') {
+          const selectedProductId = selectedProductIdFor(req.body, [`item-GW-${gwId}`, `GW-${gwId}`, gwId]);
+          const product = await chooseReleaseProduct({
+            Product,
+            ProductWarehouseStock,
+            products: mappedProducts,
+            requestedName: itemName,
+            quantity,
+            warehouseId: targetWarehouseId,
+            selectedProductId,
+            transaction,
+          });
+
+          await RequestItem.destroy({ where: { requestId: existing.id }, transaction });
+          await RequestItem.create({
+            requestId: existing.id,
+            productId: product.id,
+            quantity,
+            unitPrice: product.unitPrice,
+            subtotal: parseFloat(product.unitPrice) * quantity
+          }, { transaction });
+
+          const { balanceBefore, balanceAfter } = await deductProductStock({
+            Product,
+            ProductWarehouseStock,
+            product,
+            quantity,
+            warehouseId: targetWarehouseId,
+            transaction,
+          });
+
+          await StockHistory.create({
+            productId: product.id,
+            type: 'outbound',
+            quantity,
+            balanceBefore,
+            balanceAfter,
+            reference: req.params.id,
+            referenceType: 'request',
+            userId: req.user.id,
+            warehouseId: targetWarehouseId,
+            reason: `GW 출고: ${req.params.id}`,
+            notes: `GW문서: ${gwId}, 신청자: ${docRes.rows[0].user_name}, 완료취소 후 재출고`
+          }, { transaction });
+
+          await existing.update({
+            status: 'released',
+            quantity,
+            amount: parseFloat(product.unitPrice) * quantity,
+            warehouseId: targetWarehouseId,
+            releaserId: req.user.id,
+            releasedAt: new Date(),
+          }, { transaction });
+          request = existing;
+        } else {
+
+        const historyCount = await StockHistory.count({
+          where: {
+            reference: req.params.id,
+            referenceType: 'request',
+            type: 'outbound',
+          },
+          transaction,
+        });
+
+        if (historyCount > 0) {
+          // GW 완료취소 후 재출고: WMS 재고는 이미 차감된 이력이 있으므로
+          // 그룹웨어 출고 액션만 다시 수행한다.
+          request = existing;
+        } else {
+          const selectedProductId = selectedProductIdFor(req.body, [`item-GW-${gwId}`, `GW-${gwId}`, gwId]);
+          const product = await chooseReleaseProduct({
+            Product,
+            ProductWarehouseStock,
+            products: [],
+            requestedName: itemName,
+            quantity,
+            warehouseId: targetWarehouseId,
+            selectedProductId,
+            transaction,
+          });
+
+          await RequestItem.create({
+            requestId: existing.id,
+            productId: product.id,
+            quantity,
+            unitPrice: product.unitPrice,
+            subtotal: parseFloat(product.unitPrice) * quantity
+          }, { transaction });
+
+          const { balanceBefore, balanceAfter } = await deductProductStock({
+            Product,
+            ProductWarehouseStock,
+            product,
+            quantity,
+            warehouseId: targetWarehouseId,
+            transaction,
+          });
+
+          await StockHistory.create({
+            productId: product.id,
+            type: 'outbound',
+            quantity,
+            balanceBefore,
+            balanceAfter,
+            reference: req.params.id,
+            referenceType: 'request',
+            userId: req.user.id,
+            warehouseId: targetWarehouseId,
+            reason: `GW 출고: ${req.params.id}`,
+            notes: `GW문서: ${gwId}, 신청자: ${docRes.rows[0].user_name}, 누락 출고이력 보정`
+          }, { transaction });
+
+          request = existing;
+        }
+        }
+      }
 
     } else {
       // ── 일반(로컬) 요청 처리 ──
@@ -310,15 +531,36 @@ router.put('/:id/release', auth, roleAuth(['warehouse', 'releaser', 'admin', 'de
         return res.status(400).json({ error: '출고할 품목이 없습니다' });
       }
 
+      const reqWarehouseId = request.warehouseId ? parseInt(request.warehouseId, 10) : null;
+
       for (const item of requestItems) {
-        const product = item.Product;
-        if (product.currentStock < item.quantity) {
-          await transaction.rollback();
-          return res.status(400).json({ error: `재고 부족: ${product.productName}` });
+        const selectedProductId = selectedProductIdFor(req.body, [String(item.id), `item-${item.id}`]);
+        const product = await chooseReleaseProduct({
+          Product,
+          ProductWarehouseStock,
+          products: [item.Product],
+          requestedName: item.Product?.productName,
+          quantity: item.quantity,
+          warehouseId: reqWarehouseId,
+          selectedProductId,
+          transaction,
+        });
+        const { balanceBefore, balanceAfter } = await deductProductStock({
+          Product,
+          ProductWarehouseStock,
+          product,
+          quantity: item.quantity,
+          warehouseId: reqWarehouseId,
+          transaction,
+        });
+        if (Number(product.id) !== Number(item.productId)) {
+          await item.update({
+            productId: product.id,
+            unitPrice: product.unitPrice,
+            subtotal: parseFloat(product.unitPrice) * item.quantity,
+          }, { transaction });
         }
-        const balanceBefore = product.currentStock;
-        const balanceAfter = balanceBefore - item.quantity;
-        await product.update({ currentStock: balanceAfter }, { transaction });
+
         await StockHistory.create({
           productId: product.id,
           type: 'outbound',
@@ -328,6 +570,7 @@ router.put('/:id/release', auth, roleAuth(['warehouse', 'releaser', 'admin', 'de
           reference: req.params.id,
           referenceType: 'request',
           userId: req.user.id,
+          warehouseId: reqWarehouseId,
           reason: `출고: ${request.requestNumber}`,
           notes: `요청항목: ${item.id}`
         }, { transaction });
@@ -340,24 +583,28 @@ router.put('/:id/release', auth, roleAuth(['warehouse', 'releaser', 'admin', 'de
       }, { transaction });
     }
 
-    await transaction.commit();
-
-    // 요청사항: 로컬 출고처리 완료 후 그룹웨어 자동처리 수행
+    // GW 요청은 커밋 전에 그룹웨어 자동처리 수행
+    // → 실패 시 트랜잭션 롤백으로 로컬 DB도 원상복구 (WMS 상태 보존)
     if (isGw && gwDocIdForAction) {
       try {
-        gwActionResult = await runGwDocAction(gwDocIdForAction);
+        gwActionResult = await completeGwDocRelease(gwDocIdForAction);
       } catch (e) {
-        gwActionError = e.message;
-        console.error('GW post-release action failed:', e.message);
+        await transaction.rollback();
+        console.error('GW action failed, transaction rolled back:', e.message);
+        return res.status(502).json({
+          error: `그룹웨어 자동 처리 실패: ${e.message}`,
+          detail: '로컬 출고도 취소되었습니다. 그룹웨어 연결을 확인 후 다시 시도하세요.'
+        });
       }
     }
 
+    await transaction.commit();
+
     res.json({
       success: true,
-      message: gwActionError ? '출고 완료 (그룹웨어 자동 처리 실패)' : '출고 완료',
+      message: '출고 완료',
       requestNumber: request.requestNumber,
       gwAction: gwActionResult,
-      gwActionError
     });
   } catch (err) {
     if (transaction) await transaction.rollback();

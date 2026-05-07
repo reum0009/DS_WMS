@@ -19,6 +19,17 @@ function formatClock(d) {
   return `${d.getFullYear()}.${p(d.getMonth()+1)}.${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
 }
 
+function ProductNameSpec({ product, nameStyle = {}, specStyle = {} }) {
+  const name = product?.productName || product?.Product?.productName || '—';
+  const spec = product?.specification || product?.Product?.specification;
+  return (
+    <div>
+      <div style={nameStyle}>{name}</div>
+      {spec && <div style={{ color: '#8b949e', fontSize: 11, marginTop: 2, ...specStyle }}>{spec}</div>}
+    </div>
+  );
+}
+
 // ── 번호 규칙 안내 ───────────────────────────────────────────────
 // 출고번호: TO-YYYYMMDD-NNNN  (Transfer Out)
 // 입고번호: TI-YYYYMMDD-NNNN  (Transfer In)
@@ -453,7 +464,7 @@ export default function WarehouseTransferInbound({ user, onGoHome, onLogout }) {
                       {prod?.productCode || '—'}
                     </div>
                     <div style={{ padding: '8px 6px', borderRight: '1px solid #1c2128' }}>
-                      <div style={{ fontSize: 14, color: '#e6edf3', fontWeight: 500 }}>{prod?.productName || '—'}</div>
+                      <ProductNameSpec product={prod} nameStyle={{ fontSize: 14, color: '#e6edf3', fontWeight: 500 }} />
                       {prod?.barcode && <div style={{ fontSize: 10, color: '#8b949e', fontFamily: 'monospace', marginTop: 1 }}>{prod.barcode}</div>}
                     </div>
                     <div style={{ padding: '11px 6px', fontSize: 12, color: '#8b949e', textAlign: 'left', borderRight: '1px solid #1c2128' }}>{prod?.unit || '—'}</div>
@@ -573,7 +584,7 @@ export default function WarehouseTransferInbound({ user, onGoHome, onLogout }) {
             <div style={{ maxHeight: 130, overflowY: 'auto', marginBottom: 16 }}>
               {transfer.items.map(it => (
                 <div key={it.id} style={{ display: 'flex', justifyContent: 'space-between', padding: '5px 0', fontSize: 13, borderBottom: '1px solid #21262d' }}>
-                  <span style={{ color: '#e6edf3' }}>{it.Product?.productName}</span>
+                  <ProductNameSpec product={it.Product} nameStyle={{ color: '#e6edf3' }} />
                   <span style={{ color: '#3fb950', fontWeight: 600 }}>+{recvQtyMap[it.productId] ?? it.quantity} {it.Product?.unit}</span>
                 </div>
               ))}

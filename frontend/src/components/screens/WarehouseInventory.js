@@ -10,21 +10,108 @@ function formatClock(d){const p=n=>String(n).padStart(2,'0');return `${d.getFull
 const STATUS_OPTS=[{v:'all',l:'전체 상태'},{v:'ok',l:'정상'},{v:'low',l:'부족'},{v:'empty',l:'소진'}];
 
 const stockStatus=(p)=> {
-  const stock = p.currentStock || 0;
-  const safety = p.safetyStock || 0;
-  if (stock === 0) return { label: '소진', color: RED };
-  if (stock <= safety) return { label: '부족', color: YLW };
-  return { label: '정상', color: GRN };
+  const stock = Number(p.currentStock || 0);
+  const safety = Number(p.safetyStock || 0);
+  if (stock === 0) return { label: '소진', code: 'empty', color: RED };
+  if (safety > 0 && stock < safety * 0.3) return { label: '저재고', code: 'low', color: YLW };
+  return { label: '정상', code: 'ok', color: GRN };
+};
+
+const ProductNameSpec = ({ product, nameStyle = {}, specStyle = {} }) => (
+  <div>
+    <div style={nameStyle}>{product?.productName}</div>
+    {product?.specification && <div style={{ color: TX2, fontSize: 12, marginTop: 2, ...specStyle }}>{product.specification}</div>}
+  </div>
+);
+
+const flattenCategoryTree = (nodes, out = []) => {
+  (nodes || []).forEach(n => {
+    out.push(n);
+    if (n.children?.length) flattenCategoryTree(n.children, out);
+  });
+  return out;
+};
+
+const defaultExpandedToLevel = (nodes, visibleLevel = 3, out = new Set()) => {
+  (nodes || []).forEach(n => {
+    if (n.children?.length && n.level < visibleLevel) {
+      out.add(n.id);
+      defaultExpandedToLevel(n.children, visibleLevel, out);
+    }
+  });
+  return out;
+};
+
+const InventoryCategoryTreeNode = ({ node, selectedId, expandedIds, onSelect, onToggle, depth = 0 }) => {
+  const hasChildren = node.children && node.children.length > 0;
+  const open = expandedIds.has(node.id);
+  const selected = selectedId === node.id;
+  const color = node.color || BLU;
+
+  return (
+    <div style={{ marginLeft: depth === 0 ? 0 : 14 }}>
+      <div
+        onClick={() => onSelect(node.id)}
+        style={{
+          display: 'flex', alignItems: 'center', gap: 6, minHeight: 34,
+          padding: '5px 8px', borderRadius: 6, marginBottom: 2,
+          background: selected ? '#0d2040' : 'transparent',
+          border: selected ? `1px solid ${BLU}77` : '1px solid transparent',
+          cursor: 'pointer',
+        }}
+      >
+        <button
+          onClick={(e) => { e.stopPropagation(); if (hasChildren) onToggle(node.id); }}
+          style={{
+            background: 'none', border: 'none', color: hasChildren ? TX2 : TX3,
+            cursor: hasChildren ? 'pointer' : 'default', fontSize: 12, width: 16,
+            flexShrink: 0, padding: 0,
+          }}
+        >
+          {hasChildren ? (open ? '-' : '+') : '·'}
+        </button>
+        <span style={{
+          fontSize: 10, fontWeight: 800, padding: '1px 5px', borderRadius: 3,
+          background: `${color}22`, color, border: `1px solid ${color}44`, flexShrink: 0,
+        }}>L{node.level}</span>
+        <span style={{
+          flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+          color: selected ? TX : (node.level === 1 ? TX : '#c9d1d9'),
+          fontSize: 13, fontWeight: selected || node.level === 1 ? 800 : 500,
+        }}>
+          {node.name}
+        </span>
+        {hasChildren && <span style={{ fontSize: 11, color: TX3, flexShrink: 0 }}>{node.children.length}</span>}
+      </div>
+      {open && hasChildren && (
+        <div style={{ borderLeft: `1px solid ${color}33`, marginLeft: 18, paddingLeft: 4 }}>
+          {node.children.map(child => (
+            <InventoryCategoryTreeNode
+              key={child.id}
+              node={child}
+              selectedId={selectedId}
+              expandedIds={expandedIds}
+              onSelect={onSelect}
+              onToggle={onToggle}
+              depth={depth + 1}
+            />
+          ))}
+        </div>
+      )}
+    </div>
+  );
 };
 
 const WarehouseInventory = ({user, onGoHome}) => {
   const [clock,  setClock]  = useState(formatClock(new Date()));
   const [search, setSearch] = useState('');
-  const [catTab, setCatTab] = useState('전체');
+  const [selectedCatId, setSelectedCatId] = useState(null);
+  const [expandedCatIds, setExpandedCatIds] = useState(new Set());
   const [status, setStatus] = useState('all');
   const [selId,  setSelId]  = useState(null);
   const [sortBy, setSortBy] = useState('code'); // code | name | stock | status
   const [products, setProducts] = useState([]);
+  const [catTree, setCatTree] = useState([]);
   const [categories, setCategories] = useState([]);
   const [loading, setLoading] = useState(false);
 
@@ -33,14 +120,17 @@ const WarehouseInventory = ({user, onGoHome}) => {
       setLoading(true);
       const [pRes, cRes] = await Promise.all([
         productsAPI.getAll(user?.warehouseId ? { warehouseId: Number(user.warehouseId) } : undefined),
-        categoriesAPI.getAll()
+        categoriesAPI.getTree()
       ]);
+      const tree = cRes.data || [];
       const rows = (pRes.data || []).map(p => ({
         ...p,
         unitPrice: parseInt(p.unitPrice, 10) || 0,
       }));
       setProducts(rows);
-      setCategories(cRes.data || []);
+      setCatTree(tree);
+      setCategories(flattenCategoryTree(tree, []));
+      setExpandedCatIds(defaultExpandedToLevel(tree, 3));
     } catch (err) {
       console.error('Inventory load failed:', err);
     } finally {
@@ -65,15 +155,60 @@ const WarehouseInventory = ({user, onGoHome}) => {
     categories.forEach(c => { map[c.id] = c.name; });
     return map;
   }, [categories]);
+  const catPathMap = useMemo(() => {
+    const byId = new Map(categories.map(c => [c.id, c]));
+    const pathOf = (id, seen = new Set()) => {
+      const node = byId.get(id);
+      if (!node || seen.has(id)) return '';
+      seen.add(id);
+      const parentPath = node.parentId ? pathOf(node.parentId, seen) : '';
+      return parentPath ? `${parentPath} › ${node.name}` : node.name;
+    };
+    const map = {};
+    categories.forEach(c => { map[c.id] = pathOf(c.id); });
+    return map;
+  }, [categories]);
+
+  const catDescendants = useMemo(() => {
+    const idSet = new Set(categories.map(c => c.id));
+    const catChildrenOf = {};
+    categories.forEach(c => { catChildrenOf[c.id] = []; });
+    categories.forEach(c => {
+      if (c.parentId && idSet.has(c.parentId)) {
+        catChildrenOf[c.parentId].push(c);
+      }
+    });
+    const catDescendants = {};
+    categories.forEach(c => {
+      const ids = new Set([c.id]);
+      const stack = [c.id];
+      while (stack.length) {
+        const cur = stack.pop();
+        (catChildrenOf[cur] || []).forEach(ch => {
+          if (!ids.has(ch.id)) { ids.add(ch.id); stack.push(ch.id); }
+        });
+      }
+      catDescendants[c.id] = ids;
+    });
+    return catDescendants;
+  }, [categories]);
+
+  const toggleCat = (id) => {
+    setExpandedCatIds(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
 
   const filtered = useMemo(() => {
     let list = products;
-    if (catTab !== '전체') {
-      list = list.filter(p => catMap[p.categoryId] === catTab);
+    if (selectedCatId) {
+      const ids = catDescendants[selectedCatId] || new Set([selectedCatId]);
+      list = list.filter(p => ids.has(p.categoryId));
     }
-    if (status === 'ok')    list = list.filter(p => (p.currentStock || 0) > (p.safetyStock || 0));
-    if (status === 'low')   list = list.filter(p => (p.currentStock || 0) > 0 && (p.currentStock || 0) <= (p.safetyStock || 0));
-    if (status === 'empty') list = list.filter(p => (p.currentStock || 0) === 0);
+    if (status !== 'all') list = list.filter(p => stockStatus(p).code === status);
     
     if (search.trim()) {
       const q = search.toLowerCase();
@@ -86,22 +221,27 @@ const WarehouseInventory = ({user, onGoHome}) => {
     }
     
     return [...list].sort((a, b) => {
-      if (sortBy === 'code')  return (a.productCode || '').localeCompare(b.productCode || '');
-      if (sortBy === 'name')  return (a.productName || '').localeCompare(b.productName || '');
+      const catA = catPathMap[a.categoryId] || 'zzz 미분류';
+      const catB = catPathMap[b.categoryId] || 'zzz 미분류';
+      const catCmp = catA.localeCompare(catB, 'ko');
+      if (catCmp !== 0) return catCmp;
+      if (sortBy === 'code')  return (a.productCode || '').localeCompare(b.productCode || '', 'ko');
+      if (sortBy === 'name')  return (a.productName || '').localeCompare(b.productName || '', 'ko');
       if (sortBy === 'stock') return (a.currentStock || 0) - (b.currentStock || 0);
       if (sortBy === 'status') {
-        const score = p => (p.currentStock || 0) === 0 ? 0 : (p.currentStock || 0) <= (p.safetyStock || 0) ? 1 : 2;
-        return score(a) - score(b);
+        const score = p => ({ empty: 0, low: 1, ok: 2 }[stockStatus(p).code] ?? 2);
+        const statusCmp = score(a) - score(b);
+        if (statusCmp !== 0) return statusCmp;
       }
-      return 0;
+      return (a.productName || '').localeCompare(b.productName || '', 'ko');
     });
-  }, [products, catTab, status, search, sortBy, catMap]);
+  }, [products, selectedCatId, status, search, sortBy, catDescendants, catPathMap]);
 
   const selProduct = products.find(p => p.id === selId);
 
   const totalValue = products.reduce((s, p) => s + (p.currentStock || 0) * (p.unitPrice || 0), 0);
-  const emptyCnt = products.filter(p => (p.currentStock || 0) === 0).length;
-  const lowCnt = products.filter(p => (p.currentStock || 0) > 0 && (p.currentStock || 0) <= (p.safetyStock || 0)).length;
+  const emptyCnt = products.filter(p => stockStatus(p).code === 'empty').length;
+  const lowCnt = products.filter(p => stockStatus(p).code === 'low').length;
 
   const colHdr = (label, key) => (
     <div onClick={() => setSortBy(key)} style={{ cursor: 'pointer', color: sortBy === key ? BLU : TX2, display: 'inline-flex', alignItems: 'center', gap: 3, userSelect: 'none' }}>
@@ -131,29 +271,56 @@ const WarehouseInventory = ({user, onGoHome}) => {
 
       {/* 검색 + 필터 */}
       <div style={{ padding: '20px 24px', background: BG1, borderBottom: `2px solid ${BD2}`, flexShrink: 0 }}>
-        <div style={{ display: 'flex', gap: 12, marginBottom: 15 }}>
+        <div style={{ display: 'flex', gap: 12 }}>
           <input value={search} onChange={e => setSearch(e.target.value)} placeholder="🔍 품목명 / 품목코드 / 바코드 검색"
             style={{ flex: 1, background: BG2, border: `2px solid ${BD}`, borderRadius: 10, color: TX, padding: '14px 20px', fontSize: 18 }} />
           <select value={status} onChange={e => setStatus(e.target.value)}
             style={{ background: BG2, border: `2px solid ${BD}`, borderRadius: 10, color: TX, padding: '0 15px', fontSize: 16, cursor: 'pointer', minWidth: 160 }}>
             {STATUS_OPTS.map(o => <option key={o.v} value={o.v}>{o.l}</option>)}
           </select>
-          <button onClick={() => { setSearch(''); setCatTab('전체'); setStatus('all'); }}
+          <button onClick={() => { setSearch(''); setSelectedCatId(null); setStatus('all'); }}
             style={{ background: BG2, border: `2px solid ${BD}`, color: TX2, padding: '0 24px', borderRadius: 10, cursor: 'pointer', fontSize: 16, fontWeight: 600 }}>초기화</button>
-        </div>
-        <div style={{ display: 'flex', gap: 10, overflowX: 'auto', paddingBottom: 5 }}>
-          {['전체', ...new Set(categories.map(c => c.name))].map(c => (
-            <button key={c} onClick={() => setCatTab(c)}
-              style={{ padding: '8px 24px', borderRadius: 25, border: `2px solid ${catTab === c ? BLU : BD}`,
-                background: catTab === c ? '#0a1f40' : BG2, color: catTab === c ? BLU : TX2, cursor: 'pointer', fontSize: 15, fontWeight: catTab === c ? 800 : 500, whiteSpace: 'nowrap' }}>
-              {c}
-            </button>
-          ))}
         </div>
       </div>
 
       {/* BODY */}
       <div style={{ flex: 1, display: 'flex', overflow: 'hidden' }}>
+
+        {/* 카테고리 트리 */}
+        <div style={{ width: 310, borderRight: `2px solid ${BD2}`, background: BG1, flexShrink: 0, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+          <div style={{ padding: '14px 16px', borderBottom: `1px solid ${BD2}`, display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10 }}>
+            <span style={{ fontSize: 15, color: TX, fontWeight: 900 }}>카테고리</span>
+            <button
+              onClick={() => setSelectedCatId(null)}
+              style={{
+                background: selectedCatId === null ? '#0a1f40' : BG2,
+                border: `1px solid ${selectedCatId === null ? BLU : BD}`,
+                color: selectedCatId === null ? BLU : TX2,
+                padding: '5px 10px', borderRadius: 5, cursor: 'pointer',
+                fontSize: 12, fontWeight: 800,
+              }}
+            >
+              전체
+            </button>
+          </div>
+          <div style={{ flex: 1, overflowY: 'auto', padding: '12px 12px 16px' }}>
+            {catTree.length === 0 ? (
+              <div style={{ color: TX3, fontSize: 13, textAlign: 'center', padding: '36px 10px' }}>등록된 카테고리가 없습니다</div>
+            ) : (
+              catTree.map(root => (
+                <div key={root.id} style={{ marginBottom: 8, borderBottom: `1px solid ${BD2}`, paddingBottom: 8 }}>
+                  <InventoryCategoryTreeNode
+                    node={root}
+                    selectedId={selectedCatId}
+                    expandedIds={expandedCatIds}
+                    onSelect={setSelectedCatId}
+                    onToggle={toggleCat}
+                  />
+                </div>
+              ))
+            )}
+          </div>
+        </div>
 
         {/* ── 제품 테이블 ── */}
         <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
@@ -180,7 +347,7 @@ const WarehouseInventory = ({user, onGoHome}) => {
                     background: isSel ? '#0d2040' : i % 2 === 0 ? BG0 : BG1, borderLeft: isSel ? `6px solid ${BLU}` : '6px solid transparent', minHeight: 80 }}>
                   <div style={{ padding: '20px 10px', fontSize: 14, color: TX2, fontFamily: 'monospace', fontWeight: 600 }}>{p.productCode}</div>
                   <div style={{ padding: '15px 10px' }}>
-                    <div style={{ fontSize: 18, fontWeight: 700, color: TX }}>{p.productName}</div>
+                    <ProductNameSpec product={p} nameStyle={{ fontSize: 18, fontWeight: 700, color: TX }} />
                     <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginTop: 8 }}>
                       <div style={{ flex: 1, height: 6, background: BD2, borderRadius: 3 }}>
                         <div style={{ width: `${barPct}%`, height: '100%', background: st.color, borderRadius: 3, transition: 'width 0.3s' }} />
@@ -200,9 +367,9 @@ const WarehouseInventory = ({user, onGoHome}) => {
           </div>
           <div style={{ padding: '15px 24px', background: BG1, borderTop: `2px solid ${BD2}`, flexShrink: 0, display: 'flex', gap: 30, fontSize: 16, color: TX2, fontWeight: 600 }}>
             <span>총 <b style={{ color: TX }}>{filtered.length}</b>종 표시</span>
-            <span>소진 <b style={{ color: RED }}>{filtered.filter(p => p.currentStock === 0).length}</b></span>
-            <span>부족 <b style={{ color: YLW }}>{filtered.filter(p => p.currentStock > 0 && p.currentStock <= p.safetyStock).length}</b></span>
-            <span>정상 <b style={{ color: GRN }}>{filtered.filter(p => p.currentStock > p.safetyStock).length}</b></span>
+            <span>소진 <b style={{ color: RED }}>{filtered.filter(p => stockStatus(p).code === 'empty').length}</b></span>
+            <span>저재고 <b style={{ color: YLW }}>{filtered.filter(p => stockStatus(p).code === 'low').length}</b></span>
+            <span>정상 <b style={{ color: GRN }}>{filtered.filter(p => stockStatus(p).code === 'ok').length}</b></span>
           </div>
         </div>
 
@@ -210,7 +377,9 @@ const WarehouseInventory = ({user, onGoHome}) => {
         {selProduct && (
           <div style={{ width: 380, borderLeft: `2px solid ${BD2}`, background: BG1, padding: '24px', flexShrink: 0, overflowY: 'auto' }}>
             <div style={{ fontSize: 13, color: BLU, fontWeight: 800, textTransform: 'uppercase', marginBottom: 10 }}>Product Detail</div>
-            <div style={{ fontSize: 22, fontWeight: 900, color: TX, marginBottom: 20, lineHeight: 1.3 }}>{selProduct.productName}</div>
+            <div style={{ marginBottom: 20, lineHeight: 1.3 }}>
+              <ProductNameSpec product={selProduct} nameStyle={{ fontSize: 22, fontWeight: 900, color: TX }} specStyle={{ fontSize: 13 }} />
+            </div>
             
             <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
               {[

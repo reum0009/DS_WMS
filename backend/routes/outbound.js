@@ -125,7 +125,7 @@ router.get('/sessions', auth, roleAuth(['warehouse', 'admin']), async (req, res)
     const records = await StockHistory.findAll({
       where,
       include: [
-        { model: Product, attributes: ['productName', 'productCode', 'unit'] },
+        { model: Product, attributes: ['productName', 'specification', 'productCode', 'unit'] },
         { model: User,    attributes: ['name'] },
       ],
       order: [['createdAt', 'DESC']],
@@ -148,7 +148,7 @@ router.get('/sessions', auth, roleAuth(['warehouse', 'admin']), async (req, res)
       map[key].totalQty  += r.quantity;
     });
 
-    res.json(Object.values(map));
+    res.json(Object.values(map).sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt)));
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -163,7 +163,7 @@ router.get('/session/:reference', auth, roleAuth(['warehouse', 'admin']), async 
     const { StockHistory, Product } = global.sequelize.models;
     const items = await StockHistory.findAll({
       where: { reference: req.params.reference, type: 'outbound' },
-      include: [{ model: Product, attributes: ['productName', 'productCode', 'unit', 'barcode', 'currentStock'] }],
+      include: [{ model: Product, attributes: ['productName', 'specification', 'productCode', 'unit', 'barcode', 'currentStock', 'unitPrice'] }],
       order: [['id', 'ASC']],
     });
     res.json(items);
@@ -187,25 +187,27 @@ router.put('/session/:reference/item/:id', auth, roleAuth(['warehouse', 'admin']
     if (!record || record.reference !== req.params.reference)
       return res.status(404).json({ error: '기록 없음' });
 
-    const delta = quantity - record.quantity; // delta > 0 이면 출고가 늘어나는 것 -> 재고 감소
+    const newQty = parseInt(quantity, 10);
+    const delta = newQty - record.quantity; // delta > 0: 출고 증가 → 재고 감소, delta < 0: 출고 감소 → 재고 복구
     if (delta !== 0) {
       const product = await Product.findByPk(record.productId);
       if (product) {
-        if (product.currentStock < delta) return res.status(400).json({ error: '재고 부족' });
-        await product.update({ currentStock: product.currentStock - delta });
+        if (delta > 0 && product.currentStock < delta) return res.status(400).json({ error: `재고 부족 (현재: ${product.currentStock})` });
+        await product.update({ currentStock: Math.max(0, product.currentStock - delta) });
       }
       if (record.warehouseId) {
-        const [pws] = await ProductWarehouseStock.findOrCreate({
-          where: { productId: record.productId, warehouseId: record.warehouseId },
-          defaults: { productId: record.productId, warehouseId: record.warehouseId, currentStock: 0, safetyStock: 0 }
+        const pws = await ProductWarehouseStock.findOne({
+          where: { productId: record.productId, warehouseId: record.warehouseId }
         });
-        const whStock = parseInt(pws.currentStock, 10) || 0;
-        if (whStock < delta) return res.status(400).json({ error: '창고 재고 부족' });
-        await pws.update({ currentStock: whStock - delta });
+        if (pws) {
+          const whStock = parseInt(pws.currentStock, 10) || 0;
+          if (delta > 0 && whStock < delta) return res.status(400).json({ error: `창고 재고 부족 (현재: ${whStock})` });
+          await pws.update({ currentStock: Math.max(0, whStock - delta) });
+        }
       }
     }
 
-    await record.update({ quantity, balanceAfter: record.balanceAfter - delta });
+    await record.update({ quantity: newQty, balanceAfter: record.balanceAfter - delta });
     res.json({ message: '수정 완료', delta });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -215,28 +217,75 @@ router.put('/session/:reference/item/:id', auth, roleAuth(['warehouse', 'admin']
 /**
  * DELETE /api/outbound/session/:reference/item/:id
  * 출고 항목 삭제 (재고 복구)
+ * - 창고간 이동 출고(referenceType='inbound')이고 입고 확정된 경우 입고 측 재고도 함께 롤백
  */
 router.delete('/session/:reference/item/:id', auth, roleAuth(['warehouse', 'admin']), async (req, res) => {
+  const transaction = await global.sequelize.transaction();
   try {
-    const { StockHistory, Product, ProductWarehouseStock } = global.sequelize.models;
+    const { StockHistory, Product, ProductWarehouseStock, WarehouseTransfer } = global.sequelize.models;
 
-    const record = await StockHistory.findByPk(req.params.id);
-    if (!record || record.reference !== req.params.reference)
+    const record = await StockHistory.findByPk(req.params.id, { transaction });
+    if (!record || record.reference !== req.params.reference) {
+      await transaction.rollback();
       return res.status(404).json({ error: '기록 없음' });
+    }
 
-    const product = await Product.findByPk(record.productId);
-    if (product) await product.update({ currentStock: product.currentStock + record.quantity });
+    // 1. 출고 창고 재고 복구
+    const product = await Product.findByPk(record.productId, { transaction });
+    if (product) {
+      await product.update({ currentStock: product.currentStock + record.quantity }, { transaction });
+    }
     if (record.warehouseId) {
       const [pws] = await ProductWarehouseStock.findOrCreate({
         where: { productId: record.productId, warehouseId: record.warehouseId },
-        defaults: { productId: record.productId, warehouseId: record.warehouseId, currentStock: 0, safetyStock: 0 }
+        defaults: { productId: record.productId, warehouseId: record.warehouseId, currentStock: 0, safetyStock: 0 },
+        transaction,
       });
-      await pws.update({ currentStock: (parseInt(pws.currentStock, 10) || 0) + record.quantity });
+      await pws.update({ currentStock: (parseInt(pws.currentStock, 10) || 0) + record.quantity }, { transaction });
     }
 
-    await record.destroy();
+    // 2. 창고간 이동 출고였고 입고 확정된 경우 → 도착 창고 재고도 롤백
+    if (record.referenceType === 'inbound' && record.type === 'outbound') {
+      const transfer = await WarehouseTransfer.findOne({
+        where: { transferOutNumber: record.reference },
+        transaction,
+      });
+      if (transfer && transfer.status === 'confirmed' && transfer.toWarehouseId && transfer.transferInNumber) {
+        const inboundRecords = await StockHistory.findAll({
+          where: {
+            productId: record.productId,
+            type: 'inbound',
+            warehouseId: transfer.toWarehouseId,
+            reference: transfer.transferInNumber,
+          },
+          transaction,
+        });
+        for (const inRec of inboundRecords) {
+          const toPws = await ProductWarehouseStock.findOne({
+            where: { productId: record.productId, warehouseId: transfer.toWarehouseId },
+            transaction,
+          });
+          if (toPws) {
+            await toPws.update({
+              currentStock: Math.max(0, (parseInt(toPws.currentStock, 10) || 0) - inRec.quantity),
+            }, { transaction });
+          }
+          // 글로벌 재고: 입고 취소이므로 감소
+          await product.reload({ transaction });
+          await product.update({
+            currentStock: Math.max(0, product.currentStock - inRec.quantity),
+          }, { transaction });
+          await inRec.destroy({ transaction });
+        }
+        await transfer.update({ status: 'cancelled' }, { transaction });
+      }
+    }
+
+    await record.destroy({ transaction });
+    await transaction.commit();
     res.json({ message: '삭제 완료' });
   } catch (err) {
+    await transaction.rollback();
     res.status(500).json({ error: err.message });
   }
 });

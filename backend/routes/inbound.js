@@ -158,7 +158,7 @@ router.get('/sessions', auth, roleAuth(['warehouse', 'admin']), async (req, res)
     const records = await StockHistory.findAll({
       where,
       include: [
-        { model: Product, attributes: ['productName', 'productCode', 'unit'] },
+        { model: Product, attributes: ['productName', 'specification', 'productCode', 'unit'] },
         { model: User,    attributes: ['name'] },
       ],
       order: [['createdAt', 'DESC']],
@@ -200,7 +200,7 @@ router.get('/session/:reference', auth, roleAuth(['warehouse', 'admin']), async 
     const { StockHistory, Product } = global.sequelize.models;
     const items = await StockHistory.findAll({
       where: { reference: req.params.reference, type: 'inbound', referenceType: 'inbound' },
-      include: [{ model: Product, attributes: ['productName', 'productCode', 'unit', 'barcode', 'currentStock'] }],
+      include: [{ model: Product, attributes: ['productName', 'specification', 'productCode', 'unit', 'barcode', 'currentStock'] }],
       order: [['id', 'ASC']],
     });
     res.json(items);

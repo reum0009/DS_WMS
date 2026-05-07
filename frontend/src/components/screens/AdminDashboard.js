@@ -3,7 +3,7 @@ import {
   usersAPI, warehousesAPI, productsAPI,
   categoriesAPI, suppliersAPI, stockHistoryAPI, invitationsAPI,
   gwMappingAPI,
-  dbConfigAPI,
+  dbConfigAPI, noticesAPI,
 } from '../../api/api';
 
 // ── 단위 목록 ─────────────────────────────────────────────────────
@@ -163,6 +163,7 @@ export default function AdminDashboard({ user, onLogout }) {
   const renderPanel = () => {
     switch (activeTab) {
       case 'overview':   return <OverviewPanel   showMsg={showMsg} onNavigate={openTab} />;
+      case 'notices':    return <NoticesPanel    showMsg={showMsg} />;
       case 'items':      return <ItemsPanel       showMsg={showMsg} />;
       case 'categories': return <CategoriesPanel  showMsg={showMsg} currentUser={user} />;
       case 'warehouses': return <WarehousesPanel  showMsg={showMsg} currentUser={user} />;
@@ -267,6 +268,7 @@ export default function AdminDashboard({ user, onLogout }) {
 // ─────────────────────────────────────────────────────────────────
 const MENUS = [
   { id: 'overview',   icon: '◈', label: '대시보드' },
+  { id: 'notices',    icon: '!', label: '공지사항 관리' },
   { id: 'items',      icon: '▦', label: '품목 관리' },
   { id: 'categories', icon: '≡', label: '카테고리 관리' },
   { id: 'warehouses', icon: '⌂', label: '창고 관리' },
@@ -391,6 +393,17 @@ function AddBtn({ onClick, label = '+ 등록' }) {
   );
 }
 
+function ProductNameSpec({ item, name, spec, nameStyle = {}, specStyle = {} }) {
+  const productName = name ?? item?.productName ?? item?.Product?.productName ?? item?.mappedProduct?.productName ?? '';
+  const specification = spec ?? item?.specification ?? item?.Product?.specification ?? item?.mappedProduct?.specification ?? '';
+  return (
+    <div>
+      <div style={nameStyle}>{productName}</div>
+      {specification && <div style={{ color: '#8b949e', fontSize: 11, marginTop: 1, ...specStyle }}>{specification}</div>}
+    </div>
+  );
+}
+
 // ─────────────────────────────────────────────────────────────────
 //  개요 패널 (대시보드)
 // ─────────────────────────────────────────────────────────────────
@@ -475,7 +488,7 @@ function OverviewPanel({ showMsg, onNavigate }) {
                 <tbody>
                   {lowItems.map(p => (
                     <tr key={p.id} style={{ borderBottom: '1px solid #161b22' }}>
-                      <td style={{ padding: '8px 8px', color: '#e6edf3' }}>{p.productName}</td>
+                      <td style={{ padding: '8px 8px', color: '#e6edf3' }}><ProductNameSpec item={p} nameStyle={{ color: '#e6edf3' }} /></td>
                       <td style={{ padding: '8px 8px', color: p.currentStock === 0 ? '#f85149' : '#e3b341', fontWeight: 600 }}>{p.currentStock}</td>
                       <td style={{ padding: '8px 8px', color: '#8b949e' }}>{p.safetyStock || '미설정'}</td>
                       <td style={{ padding: '8px 8px' }}>
@@ -647,6 +660,224 @@ function CascadeCatSelect({ tree, catSel, onChange, compact = false, allowDirect
   );
 }
 
+function NoticesPanel({ showMsg }) {
+  const today = new Date().toISOString().slice(0, 10);
+  const [warehouses, setWarehouses] = useState([]);
+  const [notices, setNotices] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [editing, setEditing] = useState(null);
+  const [form, setForm] = useState({ warehouseIds: [], warehouseId: '', startDate: today, endDate: today, content: '', isActive: true });
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    try {
+      const [wRes, nRes] = await Promise.all([warehousesAPI.getAll(), noticesAPI.getAll()]);
+      setWarehouses(wRes.data || []);
+      setNotices(nRes.data || []);
+      setForm(f => ({
+        ...f,
+        warehouseIds: f.warehouseIds?.length ? f.warehouseIds : [],
+        warehouseId: f.warehouseId || String((wRes.data || [])[0]?.id || ''),
+      }));
+    } catch {
+      showMsg('공지사항 로드 실패', 'error');
+    } finally {
+      setLoading(false);
+    }
+  }, [showMsg]);
+
+  useEffect(() => { load(); }, [load]);
+
+  const resetForm = () => {
+    setEditing(null);
+    setForm({ warehouseIds: [], warehouseId: String(warehouses[0]?.id || ''), startDate: today, endDate: today, content: '', isActive: true });
+  };
+
+  const editNotice = (n) => {
+    setEditing(n);
+    setForm({
+      warehouseIds: [String(n.warehouseId || '')].filter(Boolean),
+      warehouseId: String(n.warehouseId || ''),
+      startDate: String(n.startDate || today).slice(0, 10),
+      endDate: String(n.endDate || today).slice(0, 10),
+      content: n.content || '',
+      isActive: n.isActive !== false,
+    });
+  };
+
+  const save = async () => {
+    const selectedWarehouseIds = editing ? [form.warehouseId].filter(Boolean) : (form.warehouseIds || []);
+    if (selectedWarehouseIds.length === 0) return showMsg('창고를 선택하세요', 'error');
+    if (!form.startDate || !form.endDate) return showMsg('공지 기간을 설정하세요', 'error');
+    if (form.startDate > form.endDate) return showMsg('시작일은 종료일보다 늦을 수 없습니다', 'error');
+    if (!form.content.trim()) return showMsg('공지사항 내용을 입력하세요', 'error');
+
+    setLoading(true);
+    try {
+      const payload = {
+        ...(editing
+          ? { warehouseId: Number(form.warehouseId) }
+          : { warehouseIds: selectedWarehouseIds.map(Number) }),
+        startDate: form.startDate,
+        endDate: form.endDate,
+        content: form.content.trim(),
+        isActive: form.isActive,
+      };
+      if (editing) {
+        await noticesAPI.update(editing.id, payload);
+        showMsg('공지사항 수정 완료');
+      } else {
+        await noticesAPI.create(payload);
+        showMsg(`공지사항 ${selectedWarehouseIds.length}개 창고 저장 완료`);
+      }
+      resetForm();
+      await load();
+    } catch (e) {
+      showMsg(e.response?.data?.error || '공지사항 저장 실패', 'error');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const remove = async (n) => {
+    if (!window.confirm('공지사항을 삭제하시겠습니까?')) return;
+    setLoading(true);
+    try {
+      await noticesAPI.delete(n.id);
+      showMsg('공지사항 삭제 완료');
+      if (editing?.id === n.id) resetForm();
+      await load();
+    } catch (e) {
+      showMsg(e.response?.data?.error || '공지사항 삭제 실패', 'error');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const toggleActive = async (n) => {
+    setLoading(true);
+    try {
+      await noticesAPI.update(n.id, { isActive: !n.isActive });
+      await load();
+    } catch (e) {
+      showMsg(e.response?.data?.error || '상태 변경 실패', 'error');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const whName = (id) => warehouses.find(w => String(w.id) === String(id))?.warehouseName || `창고 #${id}`;
+  const toggleWarehouse = (id, checked) => {
+    const sid = String(id);
+    setForm(f => {
+      const prev = f.warehouseIds || [];
+      return {
+        ...f,
+        warehouseIds: checked ? [...new Set([...prev, sid])] : prev.filter(x => x !== sid),
+      };
+    });
+  };
+  const allSelected = warehouses.length > 0 && form.warehouseIds.length === warehouses.length;
+
+  return (
+    <div>
+      <SectionHeader title="공지사항 관리" subtitle="창고별 공지사항과 표시 기간을 관리합니다" />
+      <div style={{ display: 'grid', gridTemplateColumns: '360px 1fr', gap: 18, alignItems: 'start' }}>
+        <div style={{ background: '#161b22', border: '1px solid #21262d', borderRadius: 8, padding: 18 }}>
+          <h3 style={{ margin: '0 0 16px', fontSize: 15, color: '#e6edf3' }}>{editing ? '공지사항 수정' : '공지사항 등록'}</h3>
+          {editing ? (
+            <Field label="창고 선택 *">
+              <select value={form.warehouseId} onChange={e => setForm(f => ({ ...f, warehouseId: e.target.value }))} style={inputStyle}>
+                <option value="">-- 창고 선택 --</option>
+                {warehouses.map(w => <option key={w.id} value={w.id}>{w.warehouseName}</option>)}
+              </select>
+            </Field>
+          ) : (
+            <Field label="창고 선택 *">
+              <div style={{ background: '#0d1117', border: '1px solid #30363d', borderRadius: 6, padding: 10, maxHeight: 160, overflowY: 'auto' }}>
+                <label style={{ display: 'flex', alignItems: 'center', gap: 8, color: '#e6edf3', fontSize: 13, fontWeight: 700, marginBottom: 8, cursor: 'pointer' }}>
+                  <input
+                    type="checkbox"
+                    checked={allSelected}
+                    onChange={e => setForm(f => ({ ...f, warehouseIds: e.target.checked ? warehouses.map(w => String(w.id)) : [] }))}
+                  />
+                  전체 창고 선택
+                </label>
+                <div style={{ borderTop: '1px solid #21262d', paddingTop: 8, display: 'grid', gap: 7 }}>
+                  {warehouses.map(w => (
+                    <label key={w.id} style={{ display: 'flex', alignItems: 'center', gap: 8, color: '#c9d1d9', fontSize: 13, cursor: 'pointer' }}>
+                      <input
+                        type="checkbox"
+                        checked={(form.warehouseIds || []).includes(String(w.id))}
+                        onChange={e => toggleWarehouse(w.id, e.target.checked)}
+                      />
+                      {w.warehouseName}
+                    </label>
+                  ))}
+                </div>
+              </div>
+              <div style={{ color: '#8b949e', fontSize: 11, marginTop: 6 }}>{form.warehouseIds.length}개 창고 선택됨</div>
+            </Field>
+          )}
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+            <Field label="시작일 *">
+              <input type="date" value={form.startDate} onChange={e => setForm(f => ({ ...f, startDate: e.target.value }))} style={inputStyle} />
+            </Field>
+            <Field label="종료일 *">
+              <input type="date" value={form.endDate} onChange={e => setForm(f => ({ ...f, endDate: e.target.value }))} style={inputStyle} />
+            </Field>
+          </div>
+          <Field label="공지사항 내용 *">
+            <textarea value={form.content} onChange={e => setForm(f => ({ ...f, content: e.target.value }))} rows={7}
+              placeholder="창고 담당자 화면에 표시할 공지사항을 입력하세요"
+              style={{ ...inputStyle, resize: 'vertical', lineHeight: 1.5 }} />
+          </Field>
+          <label style={{ display: 'flex', alignItems: 'center', gap: 8, color: '#c9d1d9', fontSize: 13, cursor: 'pointer' }}>
+            <input type="checkbox" checked={form.isActive} onChange={e => setForm(f => ({ ...f, isActive: e.target.checked }))} />
+            활성화
+          </label>
+          <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 18 }}>
+            {editing && <button onClick={resetForm} style={{ background: 'none', border: '1px solid #30363d', color: '#8b949e', borderRadius: 6, padding: '8px 14px', cursor: 'pointer' }}>취소</button>}
+            <button onClick={save} disabled={loading} style={{ background: '#238636', border: '1px solid #2ea043', color: '#fff', borderRadius: 6, padding: '8px 18px', cursor: 'pointer', fontWeight: 700 }}>
+              {loading ? '처리 중...' : editing ? '수정 저장' : '저장'}
+            </button>
+          </div>
+        </div>
+
+        <div style={{ background: '#161b22', border: '1px solid #21262d', borderRadius: 8, overflow: 'hidden' }}>
+          <div style={{ padding: '14px 16px', borderBottom: '1px solid #21262d', color: '#8b949e', fontSize: 13, fontWeight: 700 }}>공지사항 목록 ({notices.length})</div>
+          {notices.length === 0 ? (
+            <div style={{ padding: 42, color: '#444c56', textAlign: 'center', fontWeight: 700 }}>등록된 공지사항이 없습니다.</div>
+          ) : (
+            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
+              <thead>
+                <tr style={{ background: '#1c2128', color: '#8b949e' }}>
+                  {['창고', '기간', '내용', '상태', '관리'].map(h => <th key={h} style={{ padding: '10px 12px', textAlign: 'left', borderBottom: '1px solid #30363d' }}>{h}</th>)}
+                </tr>
+              </thead>
+              <tbody>
+                {notices.map(n => (
+                  <tr key={n.id} style={{ borderBottom: '1px solid #21262d' }}>
+                    <td style={{ padding: '10px 12px', color: '#e6edf3', whiteSpace: 'nowrap' }}>{n.warehouse?.warehouseName || whName(n.warehouseId)}</td>
+                    <td style={{ padding: '10px 12px', color: '#8b949e', whiteSpace: 'nowrap' }}>{n.startDate} ~ {n.endDate}</td>
+                    <td style={{ padding: '10px 12px', color: '#c9d1d9', whiteSpace: 'pre-wrap', lineHeight: 1.5 }}>{n.content}</td>
+                    <td style={{ padding: '10px 12px' }}><Badge color={n.isActive ? 'green' : 'gray'}>{n.isActive ? '활성' : '비활성'}</Badge></td>
+                    <td style={{ padding: '10px 12px', whiteSpace: 'nowrap' }}>
+                      <button onClick={() => editNotice(n)} style={{ background: '#0d2044', border: '1px solid #1158b7', color: '#58a6ff', borderRadius: 4, padding: '5px 9px', marginRight: 6, cursor: 'pointer' }}>수정</button>
+                      <button onClick={() => toggleActive(n)} style={{ background: 'none', border: '1px solid #30363d', color: '#8b949e', borderRadius: 4, padding: '5px 9px', marginRight: 6, cursor: 'pointer' }}>{n.isActive ? '숨김' : '표시'}</button>
+                      <button onClick={() => remove(n)} style={{ background: '#3a1a1a', border: '1px solid #8b1a1a', color: '#f85149', borderRadius: 4, padding: '5px 9px', cursor: 'pointer' }}>삭제</button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function ItemsPanel({ showMsg }) {
   const [view,         setView]         = useState('active');
   const [products,     setProducts]     = useState([]);
@@ -659,6 +890,7 @@ function ItemsPanel({ showMsg }) {
   const [editing,      setEditing]      = useState(null);  // null = 신규/복사, object = 수정
   const [isClone,      setIsClone]      = useState(false); // 복사 등록 모드
   const [loading,      setLoading]      = useState(false);
+  const [barcodeGenerating, setBarcodeGenerating] = useState(false);
   const [confirmModal, setConfirmModal] = useState(null);
   const [dupModal,     setDupModal]     = useState(null);
   const [dupError,     setDupError]     = useState('');   // 완전 중복 인라인 에러
@@ -887,6 +1119,35 @@ function ItemsPanel({ showMsg }) {
   const addCode    = () => setForm(f => ({ ...f, codes: [...f.codes, { codeType: 'barcode', codeValue: '', supplierId: '', notes: '' }] }));
   const removeCode = (i) => setForm(f => ({ ...f, codes: f.codes.filter((_, idx) => idx !== i) }));
   const updateCode = (i, field, val) => setForm(f => { const codes = [...f.codes]; codes[i] = { ...codes[i], [field]: val }; return { ...f, codes }; });
+  const handleGenerateBarcode = async () => {
+    if (barcodeGenerating) return;
+    setBarcodeGenerating(true);
+    try {
+      const { data } = await productsAPI.generateBarcode();
+      const baseBarcode = String(data?.barcode || '').trim().toUpperCase();
+      if (!/^W\d{5}$/.test(baseBarcode)) throw new Error('Invalid barcode');
+
+      let appliedBarcode = baseBarcode;
+      setForm(f => {
+        const codes = [...f.codes];
+        const reserved = new Set(codes.map(c => String(c.codeValue || '').trim().toUpperCase()).filter(Boolean));
+        let seq = parseInt(baseBarcode.slice(1), 10);
+        while (reserved.has(`W${String(seq).padStart(5, '0')}`)) seq += 1;
+        appliedBarcode = `W${String(seq).padStart(5, '0')}`;
+
+        const emptyBarcodeIndex = codes.findIndex(c => c.codeType === 'barcode' && !String(c.codeValue || '').trim());
+        const nextCode = { codeType: 'barcode', codeValue: appliedBarcode, supplierId: '', notes: '' };
+        if (emptyBarcodeIndex >= 0) codes[emptyBarcodeIndex] = { ...codes[emptyBarcodeIndex], ...nextCode };
+        else codes.push(nextCode);
+        return { ...f, codes };
+      });
+      showMsg(`바코드 ${appliedBarcode} 생성 완료`);
+    } catch (e) {
+      showMsg(e.response?.data?.error || '바코드 생성 실패', 'error');
+    } finally {
+      setBarcodeGenerating(false);
+    }
+  };
 
   const toggleWarehouse = (warehouseId, checked) => {
     setForm(f => {
@@ -928,7 +1189,7 @@ function ItemsPanel({ showMsg }) {
             categoryId: form.categoryId, unit: form.unit,
           });
           if (exact.length > 0) {
-            setDupError('동일한 품목명·규격·카테고리·단위가 이미 존재합니다. 중복 등록 불가합니다.');
+            setDupError('동일한 품목명·상품명·카테고리·단위가 이미 존재합니다. 중복 등록 불가합니다.');
             setLoading(false); return;
           }
           if (similar.length > 0) {
@@ -969,6 +1230,25 @@ function ItemsPanel({ showMsg }) {
   };
 
   // filterCat에서 가장 세부 선택된 카테고리 ID 반환
+  const handlePrintBarcode = (product, code) => {
+    if (!product?.id || code?.codeType !== 'barcode' || !code?.codeValue) return;
+    setConfirmModal({
+      message: `"${code.codeValue}" 바코드 라벨을 출력하시겠습니까?`,
+      subMessage: `품목명 : ${product.productName}`,
+      confirmLabel: '출력',
+      confirmColor: '#238636',
+      onConfirm: async () => {
+        try {
+          setConfirmModal(null);
+          await productsAPI.printLabel({ productId: product.id, barcode: code.codeValue });
+          showMsg('라벨 출력 요청 완료');
+        } catch (e) {
+          showMsg(e.response?.data?.error || '라벨 출력 실패', 'error');
+        }
+      },
+    });
+  };
+
   const filterCatId = filterCat.l5 || filterCat.l4 || filterCat.l3 || filterCat.l2 || filterCat.l1 || null;
 
   // 노드 id를 기준으로 자신 + 모든 하위 id 수집
@@ -993,10 +1273,19 @@ function ItemsPanel({ showMsg }) {
   }, [catTree]);
 
   const filterIds = filterCatId ? getDescendantIds(filterCatId) : null;
+  const sortProductsByCategory = (list) => [...list].sort((a, b) => {
+    const catA = catPathMap[a.categoryId] || 'zzz 미분류';
+    const catB = catPathMap[b.categoryId] || 'zzz 미분류';
+    const catCmp = catA.localeCompare(catB, 'ko');
+    if (catCmp !== 0) return catCmp;
+    const nameCmp = (a.productName || '').localeCompare(b.productName || '', 'ko');
+    if (nameCmp !== 0) return nameCmp;
+    return (a.productCode || '').localeCompare(b.productCode || '', 'ko');
+  });
 
   const filterList = (list) => {
     const q = search.toLowerCase();
-    return list.filter(p => {
+    return sortProductsByCategory(list.filter(p => {
       if (filterIds && !(p.categoryId && filterIds.has(p.categoryId))) return false;
       if (!q) return true;
       return (
@@ -1005,7 +1294,7 @@ function ItemsPanel({ showMsg }) {
         (p.specification || '').toLowerCase().includes(q) ||
         (p.codes || []).some(c => c.codeValue.toLowerCase().includes(q))
       );
-    });
+    }));
   };
 
   const filtered  = filterList(products);
@@ -1021,10 +1310,7 @@ function ItemsPanel({ showMsg }) {
   // ── 렌더 ──
   return (
     <div>
-      <SectionHeader title="품목 관리" subtitle="품목 마스터 등록·수정·관리 (ITM 자동코드 / 다중코드 지원)"
-        action={<div style={{ display: 'flex', gap: 8 }}>
-          {!showForm && <AddBtn onClick={openAdd} label="+ 품목 등록" />}
-        </div>} />
+      <SectionHeader title="품목 관리" subtitle="품목 마스터 등록·수정·관리 (ITM 자동코드 / 다중코드 지원)" />
 
       <div style={{ display: 'flex', gap: 16, alignItems: 'flex-start' }}>
 
@@ -1076,7 +1362,7 @@ function ItemsPanel({ showMsg }) {
 
           {/* 검색 */}
           <div style={{ display: 'flex', gap: 8, marginBottom: 12 }}>
-            <input value={search} onChange={e => setSearch(e.target.value)} placeholder="품목명, ITM코드, 규격, 바코드 검색" style={{ ...inputStyle, maxWidth: 280 }} />
+            <input value={search} onChange={e => setSearch(e.target.value)} placeholder="품목명, ITM코드, 상품명, 바코드 검색" style={{ ...inputStyle, maxWidth: 280 }} />
             <span style={{ marginLeft: 'auto', fontSize: 12, color: '#8b949e', alignSelf: 'center' }}>
               {view === 'active' ? `${filtered.length} / ${products.length}건` : view === 'mapping' ? `${filteredDrafts.length} / ${drafts.length}건` : `${filteredI.length} / ${inactive.length}건`}
             </span>
@@ -1087,7 +1373,7 @@ function ItemsPanel({ showMsg }) {
             <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12, minWidth: showForm ? 600 : 900 }}>
               <thead style={{ background: '#1c2128' }}>
                 <tr>
-                  {['ITM코드', '품목명 / 규격', showForm ? null : '코드', '카테고리', '단위', '현재고', '안전재고', ''].filter(Boolean).map(h => (
+                  {['ITM코드', '품목명 / 상품명', showForm ? null : '코드', '카테고리', '전체/창고별 재고', '안전재고', ''].filter(Boolean).map(h => (
                     <th key={h} style={{ textAlign: 'left', padding: '10px 12px', color: '#8b949e', fontWeight: 500, borderBottom: '1px solid #21262d', whiteSpace: 'nowrap' }}>{h}</th>
                   ))}
                 </tr>
@@ -1100,14 +1386,18 @@ function ItemsPanel({ showMsg }) {
                       {p.isDraft && <span style={{ marginLeft: 6, fontSize: 10, color: '#e3b341', border: '1px solid #9e6a03', borderRadius: 3, padding: '1px 4px' }}>임시</span>}
                     </td>
                     <td style={{ padding: '10px 12px' }}>
-                      <div style={{ color: '#e6edf3', fontWeight: 500 }}>{p.productName}</div>
-                      {p.specification && <div style={{ color: '#8b949e', fontSize: 11, marginTop: 1 }}>{p.specification}</div>}
+                      <ProductNameSpec item={p} nameStyle={{ color: '#e6edf3', fontWeight: 500 }} />
                     </td>
                     {!showForm && (
                       <td style={{ padding: '10px 12px' }}>
                         <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
                           {(p.codes || []).slice(0, 2).map((c, ci) => (
-                            <span key={ci} style={{ fontSize: 11, padding: '1px 6px', borderRadius: 4, background: CODE_TYPE_COLOR[c.codeType] + '18', color: CODE_TYPE_COLOR[c.codeType], border: `1px solid ${CODE_TYPE_COLOR[c.codeType]}44`, fontFamily: 'monospace' }}>{c.codeValue}</span>
+                            <span
+                              key={ci}
+                              onClick={e => { e.stopPropagation(); handlePrintBarcode(p, c); }}
+                              title={c.codeType === 'barcode' ? '라벨 출력' : undefined}
+                              style={{ fontSize: 11, padding: '1px 6px', borderRadius: 4, background: CODE_TYPE_COLOR[c.codeType] + '18', color: CODE_TYPE_COLOR[c.codeType], border: `1px solid ${CODE_TYPE_COLOR[c.codeType]}44`, fontFamily: 'monospace', cursor: c.codeType === 'barcode' ? 'pointer' : 'default' }}
+                            >{c.codeValue}</span>
                           ))}
                           {(p.codes || []).length > 2 && <span style={{ fontSize: 11, color: '#8b949e' }}>+{p.codes.length - 2}</span>}
                           {(p.codes || []).length === 0 && <span style={{ color: '#444c56', fontSize: 11 }}>—</span>}
@@ -1119,9 +1409,23 @@ function ItemsPanel({ showMsg }) {
                         ? catPathMap[p.categoryId].split(' › ').slice(-2).join(' › ')
                         : <span style={{ color: '#444c56' }}>미분류</span>}
                     </td>
-                    <td style={{ padding: '10px 12px', color: '#8b949e' }}>{p.unit}</td>
-                    <td style={{ padding: '10px 12px', fontWeight: 600, color: p.currentStock === 0 ? '#f85149' : p.currentStock <= (p.safetyStock || 0) ? '#e3b341' : '#3fb950' }}>{p.currentStock}</td>
-                    <td style={{ padding: '10px 12px', color: '#8b949e' }}>{p.safetyStock || <span style={{ color: '#444c56' }}>-</span>}</td>
+                    <td style={{ padding: '10px 12px', minWidth: 170 }}>
+                      <div style={{ fontWeight: 700, color: p.currentStock === 0 ? '#f85149' : p.currentStock <= (p.safetyStock || 0) ? '#e3b341' : '#3fb950', marginBottom: 5 }}>
+                        전체 {p.currentStock} <span style={{ color: '#8b949e', fontSize: 11, fontWeight: 500 }}>{p.unit}</span>
+                      </div>
+                      {(p.warehouseStocks || []).length > 0 ? (
+                        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
+                          {(p.warehouseStocks || []).map(ws => (
+                            <span key={ws.warehouseId} style={{ border: '1px solid #30363d', borderRadius: 4, padding: '1px 6px', color: '#c9d1d9', background: '#0d1117', whiteSpace: 'nowrap', fontSize: 11 }}>
+                              {ws.warehouse?.warehouseName || `창고 #${ws.warehouseId}`} {parseInt(ws.currentStock, 10) || 0}
+                            </span>
+                          ))}
+                        </div>
+                      ) : <span style={{ color: '#444c56', fontSize: 11 }}>창고별 재고 없음</span>}
+                    </td>
+                    <td style={{ padding: '10px 12px', color: '#8b949e' }}>
+                      {p.safetyStock ? <>{p.safetyStock} <span style={{ fontSize: 11 }}>{p.unit}</span></> : <span style={{ color: '#444c56' }}>-</span>}
+                    </td>
                     <td style={{ padding: '10px 12px', whiteSpace: 'nowrap' }}>
                       {view === 'inactive' ? (
                         <>
@@ -1175,7 +1479,7 @@ function ItemsPanel({ showMsg }) {
               <input value={form.productName} onChange={e => { setForm(f => ({ ...f, productName: e.target.value })); setDupError(''); }}
                 style={inputStyle} placeholder="예: A4 복사용지" />
             </Field>
-            <Field label="규격 (Specification)">
+            <Field label="상품명">
               <input value={form.specification} onChange={e => { setForm(f => ({ ...f, specification: e.target.value })); setDupError(''); }}
                 style={inputStyle} placeholder="예: 80g, A4, 500매" />
             </Field>
@@ -1261,7 +1565,10 @@ function ItemsPanel({ showMsg }) {
             {/* 코드 매핑 */}
             <div style={{ marginTop: 14, marginBottom: 6, display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
               <span style={{ fontSize: 10, color: '#58a6ff', fontWeight: 700, letterSpacing: 1, textTransform: 'uppercase' }}>코드 매핑</span>
-              <button onClick={addCode} style={{ background: 'none', border: '1px solid #238636', color: '#3fb950', padding: '2px 9px', borderRadius: 4, cursor: 'pointer', fontSize: 11 }}>+ 추가</button>
+              <div style={{ display: 'flex', gap: 6 }}>
+                <button onClick={addCode} style={{ background: 'none', border: '1px solid #238636', color: '#3fb950', padding: '2px 9px', borderRadius: 4, cursor: 'pointer', fontSize: 11 }}>+ 추가</button>
+                <button onClick={handleGenerateBarcode} disabled={barcodeGenerating} style={{ background: 'none', border: '1px solid #1158b7', color: barcodeGenerating ? '#8b949e' : '#58a6ff', padding: '2px 9px', borderRadius: 4, cursor: barcodeGenerating ? 'wait' : 'pointer', fontSize: 11 }}>바코드 생성</button>
+              </div>
             </div>
             {form.codes.length === 0 && <div style={{ fontSize: 11, color: '#444c56', marginBottom: 8 }}>바코드·거래처코드 없음</div>}
             {form.codes.map((c, i) => (
@@ -1324,17 +1631,17 @@ function ItemsPanel({ showMsg }) {
               <span style={{ fontSize: 18 }}>⚠</span>
               <span style={{ fontSize: 15, fontWeight: 700, color: '#e3b341' }}>유사 품목이 존재합니다</span>
             </div>
-            <p style={{ fontSize: 13, color: '#8b949e', marginBottom: 12 }}>아래 품목과 이름 또는 규격이 유사합니다. 중복 등록을 확인하세요.</p>
+            <p style={{ fontSize: 13, color: '#8b949e', marginBottom: 12 }}>아래 품목과 이름 또는 상품명이 유사합니다. 중복 등록을 확인하세요.</p>
             <div style={{ background: '#0d1117', border: '1px solid #21262d', borderRadius: 6, overflow: 'hidden', marginBottom: 16 }}>
               <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
                 <thead style={{ background: '#1c2128' }}>
-                  <tr>{['ITM코드', '품목명', '규격', '단위'].map(h => <th key={h} style={{ padding: '8px 10px', color: '#8b949e', fontWeight: 500, textAlign: 'left' }}>{h}</th>)}</tr>
+                  <tr>{['ITM코드', '품목명', '상품명', '단위'].map(h => <th key={h} style={{ padding: '8px 10px', color: '#8b949e', fontWeight: 500, textAlign: 'left' }}>{h}</th>)}</tr>
                 </thead>
                 <tbody>
                   {(dupModal.similar || []).map(p => (
                     <tr key={p.id} style={{ borderTop: '1px solid #21262d' }}>
                       <td style={{ padding: '7px 10px', color: '#58a6ff', fontFamily: 'monospace' }}>{p.productCode}</td>
-                      <td style={{ padding: '7px 10px', color: '#e6edf3' }}>{p.productName}</td>
+                      <td style={{ padding: '7px 10px', color: '#e6edf3' }}><ProductNameSpec item={p} nameStyle={{ color: '#e6edf3' }} /></td>
                       <td style={{ padding: '7px 10px', color: '#8b949e' }}>{p.specification || '—'}</td>
                       <td style={{ padding: '7px 10px', color: '#8b949e' }}>{p.unit}</td>
                     </tr>
@@ -2190,40 +2497,82 @@ function WarehousesPanel({ showMsg, currentUser }) {
 // ─────────────────────────────────────────────────────────────────
 function PolicyPanel({ showMsg }) {
   const [products, setProducts] = useState([]);
+  const [warehouses, setWarehouses] = useState([]);
+  const [catPathMap, setCatPathMap] = useState({});
   const [search, setSearch] = useState('');
   const [showAdjustModal, setShowAdjustModal] = useState(false);
   const [selectedProduct, setSelectedProduct] = useState(null);
-  const [adjustForm, setAdjustForm] = useState({ delta: '', reason: '' });
+  const [adjustForm, setAdjustForm] = useState({ warehouseId: '', delta: '', reason: '' });
   const [adjustLoading, setAdjustLoading] = useState(false);
 
   const loadProducts = useCallback(() => {
-    productsAPI.getAll().then(r => setProducts(r.data || [])).catch(() => showMsg('로드 실패', 'error'));
+    Promise.all([productsAPI.getAll(), warehousesAPI.getAll(), categoriesAPI.getTree()])
+      .then(([p, w, c]) => {
+        setProducts(p.data || []);
+        setWarehouses(w.data || []);
+        const pathMap = {};
+        buildCatPathMap(c.data || [], '', pathMap);
+        setCatPathMap(pathMap);
+      })
+      .catch(() => showMsg('로드 실패', 'error'));
   }, [showMsg]);
 
   useEffect(() => {
     loadProducts();
   }, [loadProducts]);
 
-  const filtered = products.filter(p => p.productName.includes(search));
+  const filtered = products
+    .filter(p => p.productName.includes(search))
+    .sort((a, b) => {
+      const catA = catPathMap[a.categoryId] || 'zzz 미분류';
+      const catB = catPathMap[b.categoryId] || 'zzz 미분류';
+      const catCmp = catA.localeCompare(catB, 'ko');
+      if (catCmp !== 0) return catCmp;
+      return (a.productName || '').localeCompare(b.productName || '', 'ko');
+    });
+  const getWarehouseStock = (product, warehouseId) => {
+    const stocks = Array.isArray(product?.warehouseStocks) ? product.warehouseStocks : [];
+    return stocks.find(ws => String(ws.warehouseId) === String(warehouseId));
+  };
+  const getWarehouseName = (warehouseId) => (
+    warehouses.find(w => String(w.id) === String(warehouseId))?.warehouseName || `창고 #${warehouseId}`
+  );
+  const getStockStatus = (current, safety) => {
+    const stock = Number(current || 0);
+    const safe = Number(safety || 0);
+    if (stock === 0) return { label: '소진', color: 'red' };
+    if (safe > 0 && stock < safe * 0.3) return { label: '저재고', color: 'yellow' };
+    return { label: '정상', color: 'green' };
+  };
+  const selectedWarehouseStock = getWarehouseStock(selectedProduct, adjustForm.warehouseId);
+  const selectedWarehouseCurrent = parseInt(selectedWarehouseStock?.currentStock, 10) || 0;
   const openAdjust = (p) => {
     setSelectedProduct(p);
-    setAdjustForm({ delta: '', reason: '' });
+    const stocks = Array.isArray(p.warehouseStocks) ? p.warehouseStocks : [];
+    setAdjustForm({ warehouseId: stocks[0]?.warehouseId ? String(stocks[0].warehouseId) : '', delta: '', reason: '' });
     setShowAdjustModal(true);
   };
   const handleAdjustSave = async () => {
     if (!selectedProduct) return;
+    if (!adjustForm.warehouseId) return showMsg('조정할 창고를 선택하세요', 'error');
     if (!adjustForm.delta || !adjustForm.reason) return showMsg('조정 수량과 사유를 입력하세요', 'error');
     const delta = parseInt(adjustForm.delta, 10);
     if (isNaN(delta) || delta === 0) return showMsg('유효한 수량을 입력하세요', 'error');
-    const currentStock = parseInt(selectedProduct.currentStock, 10) || 0;
-    const newStock = currentStock + delta;
-    if (newStock < 0) return showMsg('재고가 0 미만이 됩니다. 수량을 확인하세요', 'error');
+    const newWarehouseStock = selectedWarehouseCurrent + delta;
+    if (newWarehouseStock < 0) return showMsg('창고 재고가 0 미만이 됩니다. 수량을 확인하세요', 'error');
 
     setAdjustLoading(true);
     try {
-      await productsAPI.update(selectedProduct.id, { currentStock: newStock });
-      setProducts(prev => prev.map(p => p.id === selectedProduct.id ? { ...p, currentStock: newStock } : p));
-      showMsg(`${selectedProduct.productName} 재고 조정 완료 (${delta > 0 ? '+' : ''}${delta})`);
+      const r = await productsAPI.adjustStock(selectedProduct.id, {
+        warehouseId: adjustForm.warehouseId,
+        delta,
+        reason: adjustForm.reason,
+      });
+      const updatedProduct = r.data?.product;
+      setProducts(prev => prev.map(p => p.id === selectedProduct.id
+        ? { ...p, ...(updatedProduct || {}), currentStock: r.data?.totalCurrentStock ?? updatedProduct?.currentStock ?? p.currentStock }
+        : p));
+      showMsg(`${selectedProduct.productName} ${getWarehouseName(adjustForm.warehouseId)} 재고 조정 완료 (${delta > 0 ? '+' : ''}${delta})`);
       setShowAdjustModal(false);
     } catch (e) {
       showMsg(e.response?.data?.error || '저장 실패', 'error');
@@ -2262,31 +2611,43 @@ function PolicyPanel({ showMsg }) {
         <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
           <thead style={{ background: '#1c2128' }}>
             <tr>
-              {['품목명', '단위', '현재고', '안전재고', '상태', '정책/보정'].map(h => (
+              {['품목명', '전체 재고', '창고별 재고', '안전재고', '창고별 상태', '정책/보정'].map(h => (
                 <th key={h} style={{ textAlign: 'left', padding: '10px 12px', color: '#8b949e', fontWeight: 500, borderBottom: '1px solid #21262d' }}>{h}</th>
               ))}
             </tr>
           </thead>
           <tbody>
             {filtered.map(p => {
-              const current = Number(p.currentStock || 0);
-              const safety = Number(p.safetyStock || 0);
-              const lowThreshold = safety * 0.3;
-              const status = current === 0
-                ? { label: '소진', color: 'red' }
-                : (safety > 0 && current < lowThreshold)
-                  ? { label: '저재고', color: 'yellow' }
-                  : { label: '정상', color: 'green' };
+              const warehouseStocks = Array.isArray(p.warehouseStocks) ? p.warehouseStocks : [];
               return (
                 <tr key={p.id} style={{ borderBottom: '1px solid #21262d' }}>
-                  <td style={{ padding: '10px 12px', color: '#e6edf3' }}>{p.productName}</td>
-                  <td style={{ padding: '10px 12px', color: '#8b949e' }}>{p.unit}</td>
-                  <td style={{ padding: '10px 12px', fontWeight: 600, color: status.color === 'red' ? '#f85149' : status.color === 'yellow' ? '#e3b341' : '#3fb950' }}>{p.currentStock}</td>
+                  <td style={{ padding: '10px 12px', color: '#e6edf3' }}><ProductNameSpec item={p} nameStyle={{ color: '#e6edf3' }} /></td>
+                  <td style={{ padding: '10px 12px', fontWeight: 600, color: '#58a6ff' }}>{p.currentStock} <span style={{ color: '#8b949e', fontSize: 12, fontWeight: 500 }}>{p.unit}</span></td>
+                  <td style={{ padding: '10px 12px', color: '#8b949e' }}>
+                    {warehouseStocks.length > 0 ? (
+                      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+                        {warehouseStocks.map(ws => (
+                          <span key={ws.warehouseId} style={{ border: '1px solid #30363d', borderRadius: 4, padding: '2px 6px', color: '#c9d1d9', whiteSpace: 'nowrap' }}>
+                            {ws.warehouse?.warehouseName || getWarehouseName(ws.warehouseId)} {parseInt(ws.currentStock, 10) || 0} {p.unit}
+                          </span>
+                        ))}
+                      </div>
+                    ) : <span style={{ color: '#444c56' }}>창고 미지정</span>}
+                  </td>
                   <td style={{ padding: '10px 12px' }}>
                     <span style={{ color: p.safetyStock ? '#e6edf3' : '#444c56' }}>{p.safetyStock || '미설정'}</span>
                     <span style={{ fontSize: 10, color: '#58a6ff', marginLeft: 4 }}>(카테고리)</span>
                   </td>
-                  <td style={{ padding: '10px 12px' }}><Badge color={status.color}>{status.label}</Badge></td>
+                  <td style={{ padding: '10px 12px' }}>
+                    {warehouseStocks.length > 0 ? (
+                      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+                        {warehouseStocks.map(ws => {
+                          const status = getStockStatus(ws.currentStock, ws.safetyStock ?? p.safetyStock);
+                          return <Badge key={ws.warehouseId} color={status.color}>{ws.warehouse?.warehouseName || getWarehouseName(ws.warehouseId)} {status.label}</Badge>;
+                        })}
+                      </div>
+                    ) : <Badge color="gray">창고 미지정</Badge>}
+                  </td>
                   <td style={{ padding: '10px 12px' }}>
                     <button onClick={() => openAdjust(p)}
                       style={{ background: 'none', border: '1px solid #e3b341', color: '#e3b341', padding: '3px 10px', borderRadius: 4, cursor: 'pointer', fontSize: 12 }}>재고 조정</button>
@@ -2301,8 +2662,24 @@ function PolicyPanel({ showMsg }) {
       {showAdjustModal && selectedProduct && (
         <Modal title={`재고 조정 — ${selectedProduct.productName}`} onClose={() => setShowAdjustModal(false)}>
           <div style={{ background: '#1c2128', borderRadius: 6, padding: 12, marginBottom: 16, fontSize: 13, color: '#8b949e' }}>
-            현재 재고: <strong style={{ color: '#e6edf3' }}>{selectedProduct.currentStock} {selectedProduct.unit}</strong>
+            전체 재고: <strong style={{ color: '#e6edf3' }}>{selectedProduct.currentStock} {selectedProduct.unit}</strong>
+            {adjustForm.warehouseId && (
+              <span style={{ marginLeft: 12 }}>
+                {getWarehouseName(adjustForm.warehouseId)} 재고:
+                <strong style={{ color: '#58a6ff', marginLeft: 4 }}>{selectedWarehouseCurrent} {selectedProduct.unit}</strong>
+              </span>
+            )}
           </div>
+          <Field label="조정 창고 *">
+            <select value={adjustForm.warehouseId} onChange={e => setAdjustForm(f => ({ ...f, warehouseId: e.target.value }))} style={inputStyle}>
+              <option value="">창고 선택</option>
+              {warehouses.map(w => (
+                <option key={w.id} value={w.id}>
+                  {w.warehouseName} ({parseInt(getWarehouseStock(selectedProduct, w.id)?.currentStock, 10) || 0} {selectedProduct.unit})
+                </option>
+              ))}
+            </select>
+          </Field>
           <Field label="조정 수량 (+ 입력: 증가, - 입력: 감소) *">
             <input type="number" value={adjustForm.delta} onChange={e => setAdjustForm(f => ({ ...f, delta: e.target.value }))} style={inputStyle} placeholder="예: +10 또는 -5" />
           </Field>
@@ -2311,7 +2688,7 @@ function PolicyPanel({ showMsg }) {
           </Field>
           {adjustForm.delta && !isNaN(parseInt(adjustForm.delta, 10)) && (
             <div style={{ background: '#1c2128', borderRadius: 6, padding: 12, marginBottom: 8, fontSize: 13 }}>
-              조정 후 예상 재고: <strong style={{ color: '#58a6ff' }}>{(parseInt(selectedProduct.currentStock, 10) || 0) + parseInt(adjustForm.delta, 10)} {selectedProduct.unit}</strong>
+              조정 후 예상 창고 재고: <strong style={{ color: '#58a6ff' }}>{selectedWarehouseCurrent + parseInt(adjustForm.delta, 10)} {selectedProduct.unit}</strong>
             </div>
           )}
           <SaveBtn onClick={handleAdjustSave} loading={adjustLoading} label="조정 저장" />
@@ -3156,7 +3533,7 @@ function ReportsPanel({ showMsg }) {
                   const outQty = ph.filter(h => h.type === 'outbound').reduce((s, h) => s + h.quantity, 0);
                   return (
                     <tr key={p.id} style={{ borderBottom: '1px solid #21262d' }}>
-                      <td style={{ padding: '8px 12px', color: '#e6edf3' }}>{p.productName}</td>
+                      <td style={{ padding: '8px 12px', color: '#e6edf3' }}><ProductNameSpec item={p} nameStyle={{ color: '#e6edf3' }} /></td>
                       <td style={{ padding: '8px 12px', color: '#8b949e' }}>{p.unit}</td>
                       <td style={{ padding: '8px 12px', color: '#58a6ff', fontWeight: 600 }}>{p.currentStock}</td>
                       <td style={{ padding: '8px 12px', color: '#3fb950' }}>{inQty || '—'}</td>
@@ -3185,7 +3562,7 @@ function ReportsPanel({ showMsg }) {
               <tbody>
                 {lowStock.map(p => (
                   <tr key={p.id} style={{ borderBottom: '1px solid #21262d' }}>
-                    <td style={{ padding: '8px 12px', color: '#e6edf3', fontWeight: 500 }}>{p.productName}</td>
+                    <td style={{ padding: '8px 12px', color: '#e6edf3', fontWeight: 500 }}><ProductNameSpec item={p} nameStyle={{ color: '#e6edf3', fontWeight: 500 }} /></td>
                     <td style={{ padding: '8px 12px', color: '#8b949e' }}>{p.unit}</td>
                     <td style={{ padding: '8px 12px', fontWeight: 600, color: p.currentStock === 0 ? '#f85149' : '#e3b341' }}>{p.currentStock}</td>
                     <td style={{ padding: '8px 12px', color: '#8b949e' }}>{p.safetyStock || '미설정'}</td>
@@ -3580,7 +3957,7 @@ function GwMappingPanel({ showMsg }) {
         <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
           <thead style={{ background: "#1c2128" }}>
             <tr>
-              {["GW 문서ID", "GW 품목명 / 규격", "GW 카테고리", "GW 기준/보유", view === "completed" ? "매핑된 품목 (ITM코드)" : null, ""].filter(Boolean).map(h => (
+              {["GW 문서ID", "GW 품목명 / 상품명", "GW 카테고리", "GW 기준/보유", view === "completed" ? "매핑된 품목 (ITM코드)" : null, ""].filter(Boolean).map(h => (
                 <th key={h} style={{ textAlign: "left", padding: "10px 12px", color: "#8b949e", fontWeight: 500, borderBottom: "1px solid #21262d" }}>{h}</th>
               ))}
             </tr>
@@ -3595,7 +3972,7 @@ function GwMappingPanel({ showMsg }) {
                 <td style={{ padding: "10px 12px", color: "#8b949e", fontFamily: "monospace" }}>{it.gwDocId}</td>
                 <td style={{ padding: "10px 12px" }}>
                   <div style={{ color: "#e6edf3", fontWeight: 500 }}>{it.itemName}</div>
-                  <div style={{ color: "#8b949e", fontSize: 11 }}>{it.subCategory || "규격 없음"}</div>
+                  <div style={{ color: "#8b949e", fontSize: 11 }}>{it.subCategory || "상품명 없음"}</div>
                 </td>
                 <td style={{ padding: "10px 12px", color: "#8b949e" }}>{it.category}</td>
                 <td style={{ padding: "10px 12px" }}>
@@ -3605,7 +3982,7 @@ function GwMappingPanel({ showMsg }) {
                 {view === "completed" && (
                   <td style={{ padding: "10px 12px" }}>
                     <div style={{ color: "#58a6ff", fontFamily: "monospace" }}>{it.mappedProduct.productCode}</div>
-                    <div style={{ color: "#e6edf3", fontSize: 12 }}>{it.mappedProduct.productName}</div>
+                    <ProductNameSpec item={it} nameStyle={{ color: "#e6edf3", fontSize: 12 }} />
                   </td>
                 )}
                 <td style={{ padding: "10px 12px", textAlign: "right" }}>
@@ -3627,13 +4004,13 @@ function GwMappingPanel({ showMsg }) {
           <div style={{ marginBottom: 20, padding: 12, background: "#0d1117", border: "1px solid #21262d", borderRadius: 6 }}>
             <div style={{ fontSize: 11, color: "#8b949e", marginBottom: 4 }}>GW 정보 (원본)</div>
             <div style={{ color: "#e6edf3", fontSize: 14, fontWeight: 600 }}>{mappingModal.gwItem.itemName}</div>
-            <div style={{ color: "#8b949e", fontSize: 12 }}>{mappingModal.gwItem.subCategory || "규격 없음"}</div>
+            <div style={{ color: "#8b949e", fontSize: 12 }}>{mappingModal.gwItem.subCategory || "상품명 없음"}</div>
           </div>
 
           <Field label="품명 *">
             <input value={mappingModal.productName} onChange={e => setMappingModal(m => ({ ...m, productName: e.target.value }))} style={inputStyle} />
           </Field>
-          <Field label="규격">
+          <Field label="상품명">
             <input value={mappingModal.specification} onChange={e => setMappingModal(m => ({ ...m, specification: e.target.value }))} style={inputStyle} />
           </Field>
           <Field label="카테고리">
@@ -3723,7 +4100,12 @@ function UpdatePanel({ showMsg }) {
   const API = `${process.env.REACT_APP_API_BASE_URL || '/api'}/update`;
 
   const loadVersion  = React.useCallback(() => fetch(`${API}/check`).then(r => r.json()).then(setVersionInfo).catch(() => {}), [API]);
-  const loadPackages = React.useCallback(() => fetch(`${API}/packages`, { headers }).then(r => r.json()).then(d => { if (Array.isArray(d)) { setPackages(d); if (d.length && !selectedPkg) setSelectedPkg(d[0].name); } }).catch(() => {}), [API, headers, selectedPkg]);
+  const loadPackages = React.useCallback(() => fetch(`${API}/packages`, { headers }).then(r => r.json()).then(d => {
+    if (Array.isArray(d)) {
+      setPackages(d);
+      if (!d.some(pkg => pkg.name === selectedPkg)) setSelectedPkg(d[0]?.name || '');
+    }
+  }).catch(() => {}), [API, headers, selectedPkg]);
   const loadHistory  = React.useCallback(() => fetch(`${API}/history`, { headers }).then(r => r.json()).then(d => Array.isArray(d) && setHistory(d)).catch(() => {}), [API, headers]);
   const loadLog      = React.useCallback(() => fetch(`${API}/log`, { headers }).then(r => r.json()).then(d => setLog(d.log || '로그 없음')).catch(() => setLog('로그를 읽을 수 없습니다.')), [API, headers]);
 
@@ -3950,7 +4332,7 @@ function UpdatePanel({ showMsg }) {
           </div>
 
           {/* 패키지 목록 */}
-          <div style={{ fontSize: 12, color: '#8b949e', marginBottom: 8 }}>서버에 있는 패키지</div>
+          <div style={{ fontSize: 12, color: '#8b949e', marginBottom: 8 }}>서버에 있는 패키지 (최근 3개만 보관)</div>
           {packages.length === 0 ? (
             <div style={{ fontSize: 13, color: '#484f58', marginBottom: 16 }}>업로드된 패키지 없음</div>
           ) : (
