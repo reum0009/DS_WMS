@@ -233,7 +233,7 @@ router.get('/depts-all', auth, adminOnly, async (req, res) => {
 router.post('/dept', auth, adminOnly, async (req, res) => {
   try {
     const { Category } = global.sequelize.models;
-    const { name, code, color = '#58a6ff', accessDeptIds } = req.body;
+    const { name, code, color = '#58a6ff', accessDeptIds, safetyStock = 0 } = req.body;
     if (!name) return res.status(400).json({ error: '부서명은 필수입니다' });
 
     const dup = await Category.findOne({ where: { name, level: 1, isActive: true } });
@@ -242,7 +242,7 @@ router.post('/dept', auth, adminOnly, async (req, res) => {
     const count = await Category.count({ where: { level: 1 } });
 
     const dept = await Category.create({
-      name, level: 1, code: code || null, color, sortOrder: count + 1,
+      name, level: 1, code: code || null, color, safetyStock: Math.max(0, parseInt(safetyStock, 10) || 0), sortOrder: count + 1,
     });
 
     const allowedDeptIds = normalizeDeptIds([...(Array.isArray(accessDeptIds) ? accessDeptIds : []), dept.id]);
@@ -260,7 +260,7 @@ router.post('/', auth, roleAuth(['admin', 'dept_admin']), async (req, res) => {
   try {
     if (!ensureDeptAdminHasDept(req, res)) return;
     const { Category } = global.sequelize.models;
-    const { name, level, parentId } = req.body;
+    const { name, level, parentId, safetyStock = 0 } = req.body;
 
     if (!name || !level || !parentId)
       return res.status(400).json({ error: '이름, 레벨, 상위 카테고리는 필수입니다' });
@@ -278,7 +278,7 @@ router.post('/', auth, roleAuth(['admin', 'dept_admin']), async (req, res) => {
     }
 
     const sortOrder = await Category.count({ where: { parentId } });
-    const cat = await Category.create({ name, level, parentId, sortOrder: sortOrder + 1 });
+    const cat = await Category.create({ name, level, parentId, safetyStock: Math.max(0, parseInt(safetyStock, 10) || 0), sortOrder: sortOrder + 1 });
     res.status(201).json(cat);
   } catch (err) {
     res.status(400).json({ error: err.message });
@@ -436,9 +436,10 @@ router.put('/:id', auth, roleAuth(['admin', 'dept_admin']), async (req, res) => 
       if (cat.level === 1) return res.status(403).json({ error: '부서관리자는 부서(L1)를 수정할 수 없습니다.' });
     }
 
-    const allowed = ['name', 'code', 'color', 'sortOrder'];
+    const allowed = ['name', 'code', 'color', 'sortOrder', 'safetyStock'];
     const updates = {};
     allowed.forEach(k => { if (req.body[k] !== undefined) updates[k] = req.body[k]; });
+    if (updates.safetyStock !== undefined) updates.safetyStock = Math.max(0, parseInt(updates.safetyStock, 10) || 0);
     if (cat.level === 1 && req.user.role === 'admin' && req.body.accessDeptIds !== undefined) {
       updates.accessDeptIds = JSON.stringify(
         normalizeDeptIds([...(Array.isArray(req.body.accessDeptIds) ? req.body.accessDeptIds : []), cat.id])
@@ -490,6 +491,61 @@ router.put('/:id/restore', auth, roleAuth(['admin', 'dept_admin']), async (req, 
     res.json(cat);
   } catch (err) {
     res.status(500).json({ error: err.message });
+  }
+});
+
+// ── 카테고리별 창고 안전재고 조회 ─────────────────────────────────
+// GET /api/categories/:id/warehouse-stocks
+router.get('/:id/warehouse-stocks', auth, async (req, res) => {
+  try {
+    const { CategoryWarehouseStock, Warehouse } = global.sequelize.models;
+    const rows = await CategoryWarehouseStock.findAll({
+      where: { categoryId: req.params.id },
+      include: [{ model: Warehouse, as: 'warehouse', attributes: ['id', 'warehouseName', 'deptId'], required: false }],
+    });
+    res.json(rows);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ── 카테고리별 창고 안전재고 저장 (upsert) ────────────────────────
+// PUT /api/categories/:id/warehouse-stocks
+// body: [{ warehouseId, safetyStock }, ...]
+router.put('/:id/warehouse-stocks', auth, roleAuth(['admin', 'dept_admin']), async (req, res) => {
+  const t = await global.sequelize.transaction();
+  try {
+    if (!ensureDeptAdminHasDept(req, res)) { await t.rollback(); return; }
+    const { Category, CategoryWarehouseStock } = global.sequelize.models;
+    const categoryId = parseInt(req.params.id, 10);
+    const cat = await Category.findByPk(categoryId, { transaction: t });
+    if (!cat) { await t.rollback(); return res.status(404).json({ error: '카테고리를 찾을 수 없습니다' }); }
+    if (req.user.role === 'dept_admin') {
+      const ok = await categoryBelongsToDept(Category, categoryId, req.user.deptId);
+      if (!ok) { await t.rollback(); return res.status(403).json({ error: '본인 부서 카테고리만 수정할 수 있습니다.' }); }
+    }
+
+    const stocks = Array.isArray(req.body) ? req.body : [];
+    const valid = stocks
+      .map(s => ({ warehouseId: parseInt(s.warehouseId, 10), safetyStock: Math.max(0, parseInt(s.safetyStock, 10) || 0) }))
+      .filter(s => Number.isInteger(s.warehouseId) && s.warehouseId > 0);
+
+    // 기존 삭제 후 재삽입
+    await CategoryWarehouseStock.destroy({ where: { categoryId }, transaction: t });
+    if (valid.length) {
+      await CategoryWarehouseStock.bulkCreate(
+        valid.map(s => ({ categoryId, warehouseId: s.warehouseId, safetyStock: s.safetyStock })),
+        { transaction: t }
+      );
+    }
+    // categories.safetyStock을 창고별 최대값으로 동기화 (품목 목록의 안전재고 기준값)
+    const maxSafety = valid.length > 0 ? Math.max(...valid.map(s => s.safetyStock)) : 0;
+    await cat.update({ safetyStock: maxSafety }, { transaction: t });
+    await t.commit();
+    res.json({ message: '저장 완료', count: valid.length });
+  } catch (err) {
+    await t.rollback();
+    res.status(400).json({ error: err.message });
   }
 });
 

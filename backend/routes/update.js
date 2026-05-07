@@ -22,7 +22,10 @@ const DEPLOY_TARGETS = getDeployTargets(ROOT);
 const upload = multer({
   storage: multer.diskStorage({
     destination: (req, file, cb) => cb(null, UPDATES_DIR),
-    filename:    (req, file, cb) => cb(null, file.originalname),
+    filename:    (req, file, cb) => {
+      const safeName = path.basename(file.originalname);
+      cb(null, `${Date.now()}-${safeName}.uploading`);
+    },
   }),
   fileFilter: (req, file, cb) => {
     if (path.extname(file.originalname).toLowerCase() === '.zip') cb(null, true);
@@ -176,7 +179,29 @@ router.get('/packages', auth, adminOnly, (req, res) => {
 // POST /api/update/upload — zip 업로드
 router.post('/upload', auth, adminOnly, upload.single('file'), (req, res) => {
   if (!req.file) return res.status(400).json({ error: '파일이 없습니다.' });
-  res.json({ message: '업로드 완료', filename: req.file.filename, size: req.file.size });
+  try {
+    const filename = path.basename(req.file.originalname);
+    let finalName = filename;
+    let dest = path.join(UPDATES_DIR, finalName);
+
+    if (fs.existsSync(dest)) {
+      try {
+        fs.unlinkSync(dest);
+      } catch (e) {
+        const ext = path.extname(filename);
+        const base = path.basename(filename, ext);
+        const ts = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+        finalName = `${base}-${ts}${ext}`;
+        dest = path.join(UPDATES_DIR, finalName);
+      }
+    }
+
+    fs.renameSync(req.file.path, dest);
+    res.json({ message: '업로드 완료', filename: finalName, size: fs.statSync(dest).size });
+  } catch (e) {
+    try { if (req.file?.path && fs.existsSync(req.file.path)) fs.unlinkSync(req.file.path); } catch {}
+    res.status(500).json({ error: '업로드 파일 저장 실패: ' + e.message });
+  }
 });
 
 // POST /api/update/apply — zip 적용
@@ -221,8 +246,7 @@ router.post('/apply', auth, adminOnly, async (req, res) => {
       if (packageJsonChanged) {
         appendLog('package.json 변경 감지 → npm install 실행...');
         await new Promise((resolve) => {
-          const npmCmd = process.platform === 'win32' ? 'npm.cmd' : 'npm';
-          const proc = spawn(npmCmd, ['install', '--omit=dev'], { cwd: path.join(ROOT, 'backend'), shell: false });
+          const proc = spawn('npm', ['install', '--omit=dev'], { cwd: path.join(ROOT, 'backend'), shell: process.platform === 'win32' });
           proc.on('close', resolve);
         });
         appendLog('npm install 완료');
@@ -357,21 +381,16 @@ router.post('/create-package', auth, adminOnly, async (req, res) => {
   }
 
   const packageRoot = sourceRootInput ? path.resolve(sourceRootInput) : ROOT;
-  const packageInstallerDir = path.join(packageRoot, 'installer');
-  const packageBuildScript = path.join(packageInstallerDir, 'build-package.js');
-  const packageAppZip = path.join(packageInstallerDir, 'app.zip');
   const packageFrontendDir = path.join(packageRoot, 'frontend');
 
-  if (!fs.existsSync(packageBuildScript)) {
-    return res.status(400).json({ error: `유효한 소스 경로가 아닙니다. build-package.js 없음: ${packageBuildScript}` });
-  }
   if (!fs.existsSync(path.join(packageRoot, 'backend', 'package.json'))) {
     return res.status(400).json({ error: `유효한 소스 경로가 아닙니다. backend/package.json 없음: ${packageRoot}` });
   }
 
   const run = (cmd, args, cwd) => new Promise((resolve, reject) => {
-    const actualCmd = (process.platform === 'win32' && cmd === 'npm') ? 'npm.cmd' : cmd;
-    const child = spawn(actualCmd, args, { cwd, shell: false });
+    const isWin = process.platform === 'win32';
+    // Windows에서 .cmd 파일은 shell: true 없이 spawn하면 EINVAL 발생
+    const child = spawn(cmd, args, { cwd, shell: isWin });
     let stderr = '';
     child.stdout.on('data', d => appendLog(String(d).trim()));
     child.stderr.on('data', d => {
@@ -401,18 +420,34 @@ router.post('/create-package', auth, adminOnly, async (req, res) => {
       appendLog('프론트엔드 빌드 생략');
     }
 
-    appendLog(`build-package.js 실행: version=${version}`);
-    await run('node', [packageBuildScript, version], packageRoot);
-
-    if (!fs.existsSync(packageAppZip)) {
-      throw new Error('installer/app.zip 생성 실패');
-    }
-
     const filename = `release-v${version}.zip`;
     const updateDest = path.join(UPDATES_DIR, filename);
     const releaseDest = path.join(RELEASES_DIR, filename);
-    fs.copyFileSync(packageAppZip, updateDest);
-    fs.copyFileSync(packageAppZip, releaseDest);
+    const zip = new AdmZip();
+    const manifest = {
+      version,
+      buildDate: new Date().toISOString().slice(0, 10),
+      files: {},
+    };
+    const packageTargets = getDeployTargets(packageRoot);
+
+    for (const target of packageTargets) {
+      const files = collectFiles(target.base, target.exclude);
+      for (const file of files) {
+        const rel = path.join(target.prefix, path.relative(target.base, file)).replace(/\\/g, '/');
+        const data = fs.readFileSync(file);
+        manifest.files[rel] = crypto.createHash('sha256').update(data).digest('hex');
+        zip.addFile(`files/${rel}`, data);
+      }
+    }
+
+    const versionData = Buffer.from(JSON.stringify({ version, buildDate: manifest.buildDate }, null, 2), 'utf8');
+    manifest.files['version.json'] = crypto.createHash('sha256').update(versionData).digest('hex');
+    zip.addFile('files/version.json', versionData);
+    zip.addFile('manifest.json', Buffer.from(JSON.stringify(manifest, null, 2), 'utf8'));
+
+    zip.writeZip(releaseDest);
+    fs.copyFileSync(releaseDest, updateDest);
 
     appendLog(`업데이트 패키지 생성 완료: ${filename}`);
     res.json({

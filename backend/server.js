@@ -504,9 +504,25 @@ const Category = sequelize.define('Category', {
   // L1 전용: 부서 코드 (IT, PROD, GA …), 색상, 정렬순서
   code:          { type: Sequelize.STRING(20), allowNull: true },
   color:         { type: Sequelize.STRING(10), allowNull: true }, // hex: #58a6ff
+  safetyStock:   { type: Sequelize.INTEGER, allowNull: false, defaultValue: 0 },
   sortOrder:     { type: Sequelize.INTEGER, defaultValue: 0 },
   isActive:      { type: Sequelize.BOOLEAN, defaultValue: true },
 }, { timestamps: true, tableName: 'categories' });
+
+// 카테고리-창고별 안전재고 (카테고리 단위 per-warehouse 안전재고)
+const CategoryWarehouseStock = sequelize.define('CategoryWarehouseStock', {
+  id:          { type: Sequelize.INTEGER, primaryKey: true, autoIncrement: true },
+  categoryId:  { type: Sequelize.INTEGER, allowNull: false },
+  warehouseId: { type: Sequelize.INTEGER, allowNull: false },
+  safetyStock: { type: Sequelize.INTEGER, allowNull: false, defaultValue: 0 },
+}, {
+  timestamps: true,
+  tableName: 'category_warehouse_stocks',
+  indexes: [{ unique: true, fields: ['categoryId', 'warehouseId'] }],
+});
+CategoryWarehouseStock.belongsTo(Category, { foreignKey: 'categoryId' });
+CategoryWarehouseStock.belongsTo(Warehouse, { as: 'warehouse', foreignKey: 'warehouseId' });
+Category.hasMany(CategoryWarehouseStock, { as: 'warehouseStocks', foreignKey: 'categoryId', onDelete: 'CASCADE' });
 
 // ── GW 조직도 모델 ──
 const GwDepartment = sequelize.define('GwDepartment', {
@@ -593,6 +609,7 @@ User.belongsTo(Warehouse, { as: 'warehouseInfo', foreignKey: 'warehouseId' });
 Product.hasMany(ProductWarehouseStock, { as: 'warehouseStocks', foreignKey: 'productId', onDelete: 'CASCADE' });
 ProductWarehouseStock.belongsTo(Product, { foreignKey: 'productId' });
 ProductWarehouseStock.belongsTo(Warehouse, { as: 'warehouse', foreignKey: 'warehouseId' });
+Product.belongsTo(Category, { as: 'categoryInfo', foreignKey: 'categoryId' });
 SafetyStockRun.belongsTo(Product, { foreignKey: 'productId' });
 SafetyStockRun.belongsTo(Warehouse, { as: 'warehouse', foreignKey: 'warehouseId' });
 
@@ -625,7 +642,7 @@ const UpdateHistory = sequelize.define('UpdateHistory', {
 UpdateHistory.belongsTo(User, { as: 'applier', foreignKey: 'appliedBy' });
 
 // 모델을 전역으로 설정
-sequelize.models = { User, Request, Warehouse, Product, ProductWarehouseStock, SafetyStockRun, ItemCode, GwProductMapping, RequestItem, StockHistory, Category, DeptCustomField, ProductAttribute, Supplier, WarehouseTransfer, WarehouseTransferItem, Invitation, UpdateHistory };
+sequelize.models = { User, Request, Warehouse, Product, ProductWarehouseStock, SafetyStockRun, ItemCode, GwProductMapping, RequestItem, StockHistory, Category, CategoryWarehouseStock, DeptCustomField, ProductAttribute, Supplier, WarehouseTransfer, WarehouseTransferItem, Invitation, UpdateHistory };
 global.sequelize = sequelize;
 
 // 데이터베이스 동기화 — alter:true 로 새 컬럼/테이블 자동 추가
@@ -694,6 +711,7 @@ try {
   app.use('/api/warehouse-transfer', require('./routes/warehouseTransfer'));
   app.use('/api/invitations',        require('./routes/invitations'));
   app.use('/api/gw-mapping',         require('./routes/gwMapping'));
+  app.use('/api/system',             require('./routes/system'));
   app.use('/api/update',             require('./routes/update'));
 } catch (err) {
   console.error('Route loading error:', err);
