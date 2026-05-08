@@ -4080,7 +4080,7 @@ function UpdatePanel({ showMsg }) {
   const [tab, setTab]           = React.useState('apply'); // apply | github | history | log
   const [versionInfo, setVersionInfo] = React.useState(null);
   const [newVersion, setNewVersion] = React.useState('');
-  const [sourceRoot, setSourceRoot] = React.useState('');
+  const [gitBranch, setGitBranch] = React.useState('main');
   const [buildFrontend, setBuildFrontend] = React.useState(true);
   const [packages, setPackages] = React.useState([]);
   const [selectedPkg, setSelectedPkg] = React.useState('');
@@ -4200,7 +4200,8 @@ function UpdatePanel({ showMsg }) {
         body: JSON.stringify({
           version,
           buildFrontend,
-          sourceRoot: sourceRoot.trim() || undefined,
+          sourceMode: 'git',
+          gitBranch: gitBranch.trim() || 'main',
         }),
       });
       const data = await res.json();
@@ -4228,7 +4229,8 @@ function UpdatePanel({ showMsg }) {
         body: JSON.stringify({
           version,
           buildFrontend,
-          sourceRoot: sourceRoot.trim() || undefined,
+          sourceMode: 'git',
+          gitBranch: gitBranch.trim() || 'main',
         }),
       });
       const data = await res.json();
@@ -4270,7 +4272,7 @@ function UpdatePanel({ showMsg }) {
 
       {/* 탭 */}
       <div style={{ display: 'flex', borderBottom: '1px solid #21262d', marginBottom: 0 }}>
-        {[['apply','업데이트 적용'],['github','GitHub'],['history','이력'],['log','로그']].map(([id, label]) => (
+        {[['apply','Git 업데이트 적용'],['history','이력'],['log','로그']].map(([id, label]) => (
           <button key={id} style={s.tab(tab === id)} onClick={() => setTab(id)}>{label}</button>
         ))}
       </div>
@@ -4280,7 +4282,7 @@ function UpdatePanel({ showMsg }) {
         <div style={s.card}>
           <div style={{ marginBottom: 16, padding: 12, border: '1px solid #21262d', borderRadius: 8, background: '#0d1117' }}>
             <div style={{ fontSize: 12, color: '#8b949e', marginBottom: 8 }}>
-              현재 서버의 소스코드를 묶어 업데이트 패키지를 생성합니다. 버전 번호만 입력하고 <strong style={{ color: '#e6edf3' }}>소스 경로는 비워두면 서버가 자동으로 사용합니다.</strong>
+              Git 원격 저장소의 main 브랜치를 새로 가져와 업데이트 패키지를 생성합니다. 로컬에 아직 pull 하지 않은 변경도 main에 머지되어 있으면 포함됩니다.
             </div>
             <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 8 }}>
               <input
@@ -4298,20 +4300,18 @@ function UpdatePanel({ showMsg }) {
             </div>
             <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 4 }}>
               <input
-                value={sourceRoot}
-                onChange={(e) => setSourceRoot(e.target.value)}
-                placeholder="소스 경로 (비워두면 서버 기본 경로 자동 사용)"
+                value={gitBranch}
+                onChange={(e) => setGitBranch(e.target.value)}
+                placeholder="Git 브랜치 (기본: main)"
                 style={{ flex: 1, background: '#161b22', border: '1px solid #30363d', borderRadius: 6, color: '#e6edf3', padding: '8px 10px', fontSize: 12 }}
               />
-              {sourceRoot && (
-                <button onClick={() => setSourceRoot('')} style={{ background: 'none', border: '1px solid #30363d', color: '#8b949e', padding: '8px 10px', borderRadius: 6, cursor: 'pointer', fontSize: 12, whiteSpace: 'nowrap' }}>초기화</button>
+              {gitBranch !== 'main' && (
+                <button onClick={() => setGitBranch('main')} style={{ background: 'none', border: '1px solid #30363d', color: '#8b949e', padding: '8px 10px', borderRadius: 6, cursor: 'pointer', fontSize: 12, whiteSpace: 'nowrap' }}>main</button>
               )}
             </div>
-            {sourceRoot && (
-              <div style={{ fontSize: 11, color: '#e3b341', marginBottom: 4 }}>
-                ※ 소스 경로는 backend/, frontend/ 폴더가 있는 프로젝트 루트여야 합니다. 패키지 저장 경로가 아닙니다.
-              </div>
-            )}
+            <div style={{ fontSize: 11, color: '#8b949e', marginBottom: 4 }}>
+              서버 환경변수 UPDATE_GIT_REPO 또는 GITHUB_REPO가 있으면 그 저장소를 사용하고, 없으면 서버 checkout의 origin을 사용합니다.
+            </div>
             <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 12, color: '#8b949e' }}>
               <input type="checkbox" checked={buildFrontend} onChange={(e) => setBuildFrontend(e.target.checked)} />
               프론트엔드 빌드 포함 (화면 변경 반영 권장)
