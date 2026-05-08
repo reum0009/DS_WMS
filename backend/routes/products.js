@@ -1204,13 +1204,29 @@ router.put('/:id/restore', auth, roleAuth(['admin', 'dept_admin']), async (req, 
 router.delete('/:id/permanent', auth, roleAuth(['admin', 'dept_admin']), async (req, res) => {
   const t = await global.sequelize.transaction();
   try {
-    const { Product, ItemCode, ProductAttribute, StockHistory, RequestItem } = global.sequelize.models;
+    const {
+      Product,
+      ItemCode,
+      ProductAttribute,
+      ProductWarehouseStock,
+      SafetyStockRun,
+      StockHistory,
+      RequestItem,
+      GwProductMapping,
+      WarehouseTransferItem,
+    } = global.sequelize.models;
     const product = await Product.findByPk(req.params.id, { transaction: t });
     if (!product) { await t.rollback(); return res.status(404).json({ error: '품목을 찾을 수 없습니다' }); }
 
     // 연관 데이터 삭제
     await ItemCode.destroy({ where: { itemId: req.params.id }, transaction: t });
     if (ProductAttribute) await ProductAttribute.destroy({ where: { itemId: req.params.id }, transaction: t });
+    if (ProductWarehouseStock) await ProductWarehouseStock.destroy({ where: { productId: req.params.id }, transaction: t });
+    if (SafetyStockRun) await SafetyStockRun.destroy({ where: { productId: req.params.id }, transaction: t });
+    if (StockHistory) await StockHistory.destroy({ where: { productId: req.params.id }, transaction: t });
+    if (RequestItem) await RequestItem.destroy({ where: { productId: req.params.id }, transaction: t });
+    if (GwProductMapping) await GwProductMapping.destroy({ where: { productId: req.params.id }, transaction: t });
+    if (WarehouseTransferItem) await WarehouseTransferItem.destroy({ where: { productId: req.params.id }, transaction: t });
     await product.destroy({ transaction: t });
     await t.commit();
     res.json({ message: '영구 삭제 완료' });
