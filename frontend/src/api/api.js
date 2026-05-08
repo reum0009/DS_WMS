@@ -206,6 +206,7 @@ const productsQuickAdd = (data) =>
 const gwMappingAPI = {
   getItems: () => axios.get(`${API_BASE_URL}/gw-mapping/items`, { headers: getAuthHeader() }),
   mapItem: (data) => axios.post(`${API_BASE_URL}/gw-mapping/map`, data, { headers: getAuthHeader() }),
+  excludeItem: (data) => axios.post(`${API_BASE_URL}/gw-mapping/exclude`, data, { headers: getAuthHeader() }),
   syncItems: () => axios.post(`${API_BASE_URL}/gw-mapping/sync`, {}, { headers: getAuthHeader() }),
 };
 
