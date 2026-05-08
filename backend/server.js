@@ -363,6 +363,7 @@ const GwProductMapping = sequelize.define('GwProductMapping', {
   id:        { type: Sequelize.INTEGER, primaryKey: true, autoIncrement: true },
   gwDocId:   { type: Sequelize.STRING, allowNull: false, unique: 'gw_product_mappings_gw_doc_id_unique' },
   productId: { type: Sequelize.INTEGER, allowNull: false },
+  status:    { type: Sequelize.STRING, allowNull: false, defaultValue: 'mapped' },
 }, { timestamps: true, tableName: 'gw_product_mappings' });
 
 // RequestItem 모델 - Request와 Product의 다대다 관계
@@ -616,8 +617,8 @@ ItemCode.belongsTo(Product, { as: 'product', foreignKey: 'itemId' });
 ItemCode.belongsTo(Supplier, { as: 'supplier', foreignKey: 'supplierId' });
 
 // GW 매핑 관계
-Product.hasOne(GwProductMapping, { foreignKey: 'productId', as: 'gwMapping' });
-GwProductMapping.belongsTo(Product, { foreignKey: 'productId', as: 'product' });
+Product.hasOne(GwProductMapping, { foreignKey: 'productId', as: 'gwMapping', constraints: false });
+GwProductMapping.belongsTo(Product, { foreignKey: 'productId', as: 'product', constraints: false });
 
 // DeptCustomField / ProductAttribute 관계
 Category.hasMany(DeptCustomField, { as: 'customFields', foreignKey: 'deptId' });

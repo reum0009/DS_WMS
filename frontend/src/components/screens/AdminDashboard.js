@@ -3771,7 +3771,7 @@ function AutoOrderPanel() {
 //  GW 소모품 매핑 패널
 // ─────────────────────────────────────────────────────────────────
 function GwMappingPanel({ showMsg }) {
-  const [view, setView] = useState("unregistered"); // "unregistered" | "completed"
+  const [view, setView] = useState("unregistered"); // "unregistered" | "completed" | "excluded"
   const [items, setItems] = useState([]);
   const [loading, setLoading] = useState(true);
   const [catTree, setCatTree] = useState([]);
@@ -3803,15 +3803,22 @@ function GwMappingPanel({ showMsg }) {
         loadCatTree()
       ]);
       setItems(res.data || []);
+      return true;
     } catch (e) {
       const msg = e?.response?.data?.error || e?.response?.data?.message || e?.message || "알 수 없는 오류";
       showMsg(`데이터 로드 실패: ${msg}`, "error");
+      return false;
     } finally {
       setLoading(false);
     }
   }, [showMsg]);
 
   useEffect(() => { load(); }, [load]);
+
+  const refreshMappingStatus = async () => {
+    const ok = await load();
+    if (ok) showMsg("그룹웨어와 현재 시스템 상태를 다시 비교했습니다");
+  };
 
   const openMapping = (item) => {
     const isEdit = !!item.mappedProduct;
@@ -3850,8 +3857,8 @@ function GwMappingPanel({ showMsg }) {
     setMappingModal({
       gwItem: item,
       productId: item.mappedProduct?.id || null,
-      productName: item.mappedProduct?.productName || item.itemName,
-      specification: item.mappedProduct?.specification || item.subCategory,
+      productName: item.mappingNeedsReview ? item.itemName : (item.mappedProduct?.productName || item.itemName),
+      specification: "",
       categoryId: item.mappedProduct?.categoryId || "",
       unit: item.mappedProduct?.unit || "개",
       catSel: initialCatSel
@@ -3878,6 +3885,21 @@ function GwMappingPanel({ showMsg }) {
       showMsg(e.response?.data?.error || "저장 실패", "error");
     } finally {
       setSaving(false);
+    }
+  };
+
+  const excludeMapping = async (item) => {
+    if (!item.mappedProduct?.id) {
+      showMsg("제외할 기존 매핑 품목이 없습니다", "error");
+      return;
+    }
+    if (!window.confirm(`${item.itemName} 항목을 매핑 제외 목록으로 이동할까요?`)) return;
+    try {
+      await gwMappingAPI.excludeItem({ gwDocId: item.gwDocId, productId: item.mappedProduct.id });
+      showMsg("매핑 제외로 이동했습니다");
+      load();
+    } catch (e) {
+      showMsg(e.response?.data?.error || "제외 처리 실패", "error");
     }
   };
 
@@ -3920,13 +3942,18 @@ function GwMappingPanel({ showMsg }) {
   };
 
   const filtered = items.filter(it => {
-    const isMapped = !!it.mappedProduct;
-    if (view === "unregistered" && isMapped) return false;
-    if (view === "completed" && !isMapped) return false;
+    const mappedProducts = it.mappedProducts || (it.mappedProduct ? [it.mappedProduct] : []);
+    const isComplete = mappedProducts.length > 0 && !it.mappingNeedsReview;
+    if (view === "excluded" && !it.excluded) return false;
+    if (view === "unregistered" && (isComplete || it.excluded)) return false;
+    if (view === "completed" && (!isComplete || it.excluded)) return false;
     if (!search) return true;
     return it.itemName.toLowerCase().includes(search.toLowerCase()) || 
            it.gwDocId.includes(search) ||
-           (it.mappedProduct?.productCode || "").toLowerCase().includes(search.toLowerCase());
+           mappedProducts.some(p =>
+             (p.productName || "").toLowerCase().includes(search.toLowerCase()) ||
+             (p.specification || "").toLowerCase().includes(search.toLowerCase())
+           );
   });
 
   return (
@@ -3934,7 +3961,7 @@ function GwMappingPanel({ showMsg }) {
       <SectionHeader title="GW 소모품 매핑" subtitle="그룹웨어 소모품(Applet 26) 품목과 시스템 품목 연결 관리" />
 
       <div style={{ display: "flex", gap: 0, marginBottom: 16, borderBottom: "1px solid #21262d" }}>
-        {[["unregistered", "미등록 품목"], ["completed", "매핑 완료"]].map(([v, label]) => (
+        {[["unregistered", "매핑 필요"], ["completed", "매핑 완료"], ["excluded", "매핑 제외"]].map(([v, label]) => (
           <button key={v} onClick={() => setView(v)} style={{
             background: "none", border: "none", cursor: "pointer", padding: "8px 18px",
             fontSize: 13, fontWeight: view === v ? 700 : 400,
@@ -3943,21 +3970,33 @@ function GwMappingPanel({ showMsg }) {
           }}>
             {label}
             <span style={{ marginLeft: 6, fontSize: 11, padding: "1px 6px", borderRadius: 10, background: "#1a3a2a", color: "#3fb950" }}>
-              {items.filter(it => v === "unregistered" ? !it.mappedProduct : !!it.mappedProduct).length}
+              {items.filter(it => {
+                const mappedProducts = it.mappedProducts || (it.mappedProduct ? [it.mappedProduct] : []);
+                const isComplete = mappedProducts.length > 0 && !it.mappingNeedsReview;
+                if (v === "excluded") return !!it.excluded;
+                return v === "unregistered" ? !isComplete && !it.excluded : isComplete && !it.excluded;
+              }).length}
             </span>
           </button>
         ))}
       </div>
 
       <div style={{ display: "flex", gap: 8, marginBottom: 12, justifyContent: "space-between", alignItems: "center" }}>
-        <input value={search} onChange={e => setSearch(e.target.value)} placeholder="GW품목명, 문서ID, ITM코드 검색" style={{ ...inputStyle, maxWidth: 280 }} />
+        <input value={search} onChange={e => setSearch(e.target.value)} placeholder="GW품목명, 문서ID, 매핑 품목 검색" style={{ ...inputStyle, maxWidth: 280 }} />
+        <button onClick={refreshMappingStatus} disabled={loading} style={{
+          background: "#1f6feb", border: "1px solid #388bfd", color: "#fff",
+          padding: "8px 14px", borderRadius: 6, cursor: loading ? "wait" : "pointer",
+          fontSize: 12, fontWeight: 700
+        }}>
+          {loading ? "비교 중..." : "새로고침"}
+        </button>
       </div>
 
       <div style={{ background: "#161b22", border: "1px solid #21262d", borderRadius: 8, overflow: "hidden" }}>
         <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
           <thead style={{ background: "#1c2128" }}>
             <tr>
-              {["GW 문서ID", "GW 품목명 / 상품명", "GW 카테고리", "GW 기준/보유", view === "completed" ? "매핑된 품목 (ITM코드)" : null, ""].filter(Boolean).map(h => (
+              {["GW 문서ID", "GW 품목명", "GW 카테고리", "GW 기준/보유", view !== "unregistered" ? "매핑된 품목" : null, ""].filter(Boolean).map(h => (
                 <th key={h} style={{ textAlign: "left", padding: "10px 12px", color: "#8b949e", fontWeight: 500, borderBottom: "1px solid #21262d" }}>{h}</th>
               ))}
             </tr>
@@ -3972,17 +4011,26 @@ function GwMappingPanel({ showMsg }) {
                 <td style={{ padding: "10px 12px", color: "#8b949e", fontFamily: "monospace" }}>{it.gwDocId}</td>
                 <td style={{ padding: "10px 12px" }}>
                   <div style={{ color: "#e6edf3", fontWeight: 500 }}>{it.itemName}</div>
-                  <div style={{ color: "#8b949e", fontSize: 11 }}>{it.subCategory || "상품명 없음"}</div>
+                  {it.mappingNeedsReview && it.mappingIssues?.length > 0 && (
+                    <div style={{ color: "#e3b341", fontSize: 11, marginTop: 4 }}>
+                      {it.mappingIssues.join(", ")}
+                    </div>
+                  )}
                 </td>
                 <td style={{ padding: "10px 12px", color: "#8b949e" }}>{it.category}</td>
                 <td style={{ padding: "10px 12px" }}>
                   <div style={{ color: "#8b949e", fontSize: 12 }}>기준: {it.baseQty || 0}</div>
                   <div style={{ color: "#3fb950", fontSize: 12, fontWeight: 600 }}>보유: {it.currentStock || 0}</div>
                 </td>
-                {view === "completed" && (
+                {view !== "unregistered" && (
                   <td style={{ padding: "10px 12px" }}>
-                    <div style={{ color: "#58a6ff", fontFamily: "monospace" }}>{it.mappedProduct.productCode}</div>
-                    <ProductNameSpec item={it} nameStyle={{ color: "#e6edf3", fontSize: 12 }} />
+                    <div style={{ color: "#e6edf3", fontSize: 12, fontWeight: 700 }}>{it.itemName}</div>
+                    <div style={{ color: "#8b949e", fontSize: 11, marginTop: 2 }}>
+                      {(it.mappedProducts || (it.mappedProduct ? [it.mappedProduct] : []))
+                        .map(product => product.specification || product.productName)
+                        .filter(Boolean)
+                        .join(", ")}
+                    </div>
                   </td>
                 )}
                 <td style={{ padding: "10px 12px", textAlign: "right" }}>
@@ -3990,8 +4038,16 @@ function GwMappingPanel({ showMsg }) {
                     background: "none", border: "1px solid #30363d", color: "#8b949e",
                     padding: "4px 12px", borderRadius: 4, cursor: "pointer", fontSize: 12
                   }}>
-                    {view === "completed" ? "수정" : "등록/매핑"}
+                    {view === "completed" ? "수정" : it.mappedProduct ? "수정/재매핑" : "등록/매핑"}
                   </button>
+                  {view === "unregistered" && it.mappedProduct && (
+                    <button onClick={() => excludeMapping(it)} style={{
+                      marginLeft: 6, background: "none", border: "1px solid #6e7681", color: "#8b949e",
+                      padding: "4px 10px", borderRadius: 4, cursor: "pointer", fontSize: 12
+                    }}>
+                      제외
+                    </button>
+                  )}
                 </td>
               </tr>
             ))}
@@ -4004,14 +4060,10 @@ function GwMappingPanel({ showMsg }) {
           <div style={{ marginBottom: 20, padding: 12, background: "#0d1117", border: "1px solid #21262d", borderRadius: 6 }}>
             <div style={{ fontSize: 11, color: "#8b949e", marginBottom: 4 }}>GW 정보 (원본)</div>
             <div style={{ color: "#e6edf3", fontSize: 14, fontWeight: 600 }}>{mappingModal.gwItem.itemName}</div>
-            <div style={{ color: "#8b949e", fontSize: 12 }}>{mappingModal.gwItem.subCategory || "상품명 없음"}</div>
           </div>
 
           <Field label="품명 *">
             <input value={mappingModal.productName} onChange={e => setMappingModal(m => ({ ...m, productName: e.target.value }))} style={inputStyle} />
-          </Field>
-          <Field label="상품명">
-            <input value={mappingModal.specification} onChange={e => setMappingModal(m => ({ ...m, specification: e.target.value }))} style={inputStyle} />
           </Field>
           <Field label="카테고리">
             <CascadeCatSelect
