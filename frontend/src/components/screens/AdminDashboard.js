@@ -404,6 +404,33 @@ function ProductNameSpec({ item, name, spec, nameStyle = {}, specStyle = {} }) {
   );
 }
 
+const warehouseDisplayName = (warehouseStock, warehouses = []) => {
+  const warehouseId = warehouseStock?.warehouseId ?? warehouseStock?.id;
+  return warehouseStock?.warehouse?.warehouseName
+    || warehouses.find(w => String(w.id) === String(warehouseId))?.warehouseName
+    || `창고 #${warehouseId}`;
+};
+
+const warehouseSortRank = (name) => {
+  const text = String(name || '').replace(/\s+/g, '');
+  if (text.includes('평택')) return 0;
+  return 1;
+};
+
+const sortWarehouseStocksForDisplay = (stocks = [], warehouses = []) => [...(stocks || [])].sort((a, b) => {
+  const nameA = warehouseDisplayName(a, warehouses);
+  const nameB = warehouseDisplayName(b, warehouses);
+  const rank = warehouseSortRank(nameA) - warehouseSortRank(nameB);
+  if (rank !== 0) return rank;
+  return nameA.localeCompare(nameB, 'ko');
+});
+
+const sortWarehousesForDisplay = (warehouses = []) => [...(warehouses || [])].sort((a, b) => {
+  const rank = warehouseSortRank(a.warehouseName) - warehouseSortRank(b.warehouseName);
+  if (rank !== 0) return rank;
+  return String(a.warehouseName || '').localeCompare(String(b.warehouseName || ''), 'ko');
+});
+
 // ─────────────────────────────────────────────────────────────────
 //  개요 패널 (대시보드)
 // ─────────────────────────────────────────────────────────────────
@@ -1225,7 +1252,16 @@ function ItemsPanel({ showMsg }) {
       message: `"${name}" 품목을 영구 삭제하시겠습니까?`,
       subMessage: '연결된 바코드/코드 데이터도 함께 삭제되며 복구할 수 없습니다.',
       confirmLabel: '영구 삭제', confirmColor: '#b62324',
-      onConfirm: async () => { setConfirmModal(null); await productsAPI.deletePermanent(id).catch(() => showMsg('삭제 실패', 'error')); showMsg('영구 삭제 완료'); load(); },
+      onConfirm: async () => {
+        setConfirmModal(null);
+        try {
+          await productsAPI.deletePermanent(id);
+          showMsg('영구 삭제 완료');
+          load();
+        } catch (e) {
+          showMsg(e.response?.data?.error || '삭제 실패', 'error');
+        }
+      },
     });
   };
 
@@ -1415,7 +1451,7 @@ function ItemsPanel({ showMsg }) {
                       </div>
                       {(p.warehouseStocks || []).length > 0 ? (
                         <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
-                          {(p.warehouseStocks || []).map(ws => (
+                          {sortWarehouseStocksForDisplay(p.warehouseStocks || [], deptWarehouses).map(ws => (
                             <span key={ws.warehouseId} style={{ border: '1px solid #30363d', borderRadius: 4, padding: '1px 6px', color: '#c9d1d9', background: '#0d1117', whiteSpace: 'nowrap', fontSize: 11 }}>
                               {ws.warehouse?.warehouseName || `창고 #${ws.warehouseId}`} {parseInt(ws.currentStock, 10) || 0}
                             </span>
@@ -1698,7 +1734,7 @@ function TreeNode({ node, depth = 0, onAdd, onEdit, onDelete, onMove,
       : 'transparent',
     border: dropPosition === 'child' ? '1px dashed #58a6ff' : '1px solid transparent',
     opacity: isDragging ? 0.5 : 1,
-    cursor: node.level > 1 ? 'grab' : 'default',
+    cursor: 'grab',
   };
 
   return (
@@ -1724,13 +1760,13 @@ function TreeNode({ node, depth = 0, onAdd, onEdit, onDelete, onMove,
     >
       <div
         style={rowStyle}
-        draggable={node.level > 1}
-        onDragStart={node.level > 1 ? (e) => {
+        draggable
+        onDragStart={(e) => {
           e.stopPropagation();
           e.dataTransfer.effectAllowed = 'move';
           onDragStart(node);
-        } : undefined}
-        onDragEnd={node.level > 1 ? (e) => { e.stopPropagation(); onDragEnd && onDragEnd(); } : undefined}
+        }}
+        onDragEnd={(e) => { e.stopPropagation(); onDragEnd && onDragEnd(); }}
         onMouseEnter={e => { if (!isDragging) e.currentTarget.style.background = '#1c2128'; }}
         onMouseLeave={e => { if (!isDropTarget || !canDrop) e.currentTarget.style.background = 'transparent'; }}
       >
@@ -1740,10 +1776,7 @@ function TreeNode({ node, depth = 0, onAdd, onEdit, onDelete, onMove,
           fontSize: 11, width: 16, flexShrink: 0, padding: 0,
         }}>{hasChildren ? (open ? '▾' : '▸') : '·'}</button>
 
-        {/* 드래그 핸들 (L2 이상만) */}
-        {node.level > 1 && (
-          <span style={{ fontSize: 11, color: '#444c56', cursor: 'grab', userSelect: 'none', flexShrink: 0 }} title="드래그하여 이동">⠿</span>
-        )}
+        <span style={{ fontSize: 11, color: '#444c56', cursor: 'grab', userSelect: 'none', flexShrink: 0 }} title="드래그하여 이동">⠿</span>
 
         {/* 레벨 인디케이터 */}
         <span style={{
@@ -2024,6 +2057,7 @@ function CategoriesPanel({ showMsg, currentUser }) {
 
   const canDropChild = useCallback((targetNode, drag) => {
     if (!drag?.dragId || !targetNode) return false;
+    if (drag.dragLevel === 1) return false;
     if (drag.dragId === targetNode.id) return false;
     if (targetNode.level >= 5) return false;
     if (Array.isArray(drag.dragDescendantIds) && drag.dragDescendantIds.includes(targetNode.id)) return false;
@@ -2548,7 +2582,7 @@ function PolicyPanel({ showMsg }) {
   const selectedWarehouseCurrent = parseInt(selectedWarehouseStock?.currentStock, 10) || 0;
   const openAdjust = (p) => {
     setSelectedProduct(p);
-    const stocks = Array.isArray(p.warehouseStocks) ? p.warehouseStocks : [];
+    const stocks = sortWarehouseStocksForDisplay(Array.isArray(p.warehouseStocks) ? p.warehouseStocks : [], warehouses);
     setAdjustForm({ warehouseId: stocks[0]?.warehouseId ? String(stocks[0].warehouseId) : '', delta: '', reason: '' });
     setShowAdjustModal(true);
   };
@@ -2618,7 +2652,7 @@ function PolicyPanel({ showMsg }) {
           </thead>
           <tbody>
             {filtered.map(p => {
-              const warehouseStocks = Array.isArray(p.warehouseStocks) ? p.warehouseStocks : [];
+              const warehouseStocks = sortWarehouseStocksForDisplay(Array.isArray(p.warehouseStocks) ? p.warehouseStocks : [], warehouses);
               return (
                 <tr key={p.id} style={{ borderBottom: '1px solid #21262d' }}>
                   <td style={{ padding: '10px 12px', color: '#e6edf3' }}><ProductNameSpec item={p} nameStyle={{ color: '#e6edf3' }} /></td>
@@ -2673,7 +2707,7 @@ function PolicyPanel({ showMsg }) {
           <Field label="조정 창고 *">
             <select value={adjustForm.warehouseId} onChange={e => setAdjustForm(f => ({ ...f, warehouseId: e.target.value }))} style={inputStyle}>
               <option value="">창고 선택</option>
-              {warehouses.map(w => (
+              {sortWarehousesForDisplay(warehouses).map(w => (
                 <option key={w.id} value={w.id}>
                   {w.warehouseName} ({parseInt(getWarehouseStock(selectedProduct, w.id)?.currentStock, 10) || 0} {selectedProduct.unit})
                 </option>

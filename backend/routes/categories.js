@@ -376,7 +376,6 @@ router.put('/:id/move-after', auth, roleAuth(['admin', 'dept_admin']), async (re
 
     const cat = await Category.findByPk(req.params.id, { transaction: t });
     if (!cat) { await t.rollback(); return res.status(404).json({ error: '카테고리를 찾을 수 없습니다' }); }
-    if (cat.level === 1) { await t.rollback(); return res.status(400).json({ error: '부서(L1)는 이동할 수 없습니다' }); }
 
     const afterNode = await Category.findByPk(afterId, { transaction: t });
     if (!afterNode) { await t.rollback(); return res.status(404).json({ error: '기준 노드를 찾을 수 없습니다' }); }
@@ -413,7 +412,7 @@ router.put('/:id/move-after', auth, roleAuth(['admin', 'dept_admin']), async (re
 
     // 부모 변경 + color 상속
     const catUpdates = { parentId: newParentId };
-    const newParent = await Category.findByPk(newParentId, { transaction: t });
+    const newParent = newParentId ? await Category.findByPk(newParentId, { transaction: t }) : null;
     if (newParent?.color) catUpdates.color = newParent.color;
     await cat.update(catUpdates, { transaction: t });
 
@@ -555,19 +554,41 @@ router.put('/:id/warehouse-stocks', auth, roleAuth(['admin', 'dept_admin']), asy
 // ── 카테고리 영구 삭제 ────────────────────────────────────────────
 // DELETE /api/categories/:id/permanent
 router.delete('/:id/permanent', auth, roleAuth(['admin', 'dept_admin']), async (req, res) => {
+  const t = await global.sequelize.transaction();
   try {
-    if (!ensureDeptAdminHasDept(req, res)) return;
-    const { Category } = global.sequelize.models;
-    const cat = await Category.findByPk(req.params.id);
-    if (!cat) return res.status(404).json({ error: '카테고리를 찾을 수 없습니다' });
+    if (!ensureDeptAdminHasDept(req, res)) { await t.rollback(); return; }
+    const { Category, CategoryWarehouseStock, Product } = global.sequelize.models;
+    const cat = await Category.findByPk(req.params.id, { transaction: t });
+    if (!cat) { await t.rollback(); return res.status(404).json({ error: '카테고리를 찾을 수 없습니다' }); }
     if (req.user.role === 'dept_admin') {
       const ok = await categoryBelongsToDept(Category, cat.id, req.user.deptId);
-      if (!ok) return res.status(403).json({ error: '본인 부서 카테고리만 삭제할 수 있습니다.' });
-      if (cat.level === 1) return res.status(403).json({ error: '부서관리자는 부서(L1)를 영구 삭제할 수 없습니다.' });
+      if (!ok) { await t.rollback(); return res.status(403).json({ error: '본인 부서 카테고리만 삭제할 수 있습니다.' }); }
+      if (cat.level === 1) { await t.rollback(); return res.status(403).json({ error: '부서관리자는 부서(L1)를 영구 삭제할 수 없습니다.' }); }
     }
-    await cat.destroy();
+
+    const allCats = await Category.findAll({ attributes: ['id', 'parentId'], transaction: t });
+    const byParent = new Map();
+    allCats.forEach(row => {
+      const parentId = row.parentId == null ? null : parseInt(row.parentId, 10);
+      if (!byParent.has(parentId)) byParent.set(parentId, []);
+      byParent.get(parentId).push(row);
+    });
+    const ids = [parseInt(cat.id, 10), ...collectDescendantIds(cat.id, byParent)];
+
+    const productCount = Product ? await Product.count({ where: { categoryId: ids }, transaction: t }) : 0;
+    if (productCount > 0) {
+      await t.rollback();
+      return res.status(400).json({ error: `이 카테고리를 사용하는 품목 ${productCount}개가 있어 영구 삭제할 수 없습니다.` });
+    }
+
+    if (CategoryWarehouseStock) {
+      await CategoryWarehouseStock.destroy({ where: { categoryId: ids }, transaction: t });
+    }
+    await Category.destroy({ where: { id: ids }, transaction: t });
+    await t.commit();
     res.json({ message: '영구 삭제 완료' });
   } catch (err) {
+    await t.rollback();
     res.status(500).json({ error: err.message });
   }
 });
