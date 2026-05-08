@@ -640,7 +640,7 @@ SafetyStockRun.belongsTo(Warehouse, { as: 'warehouse', foreignKey: 'warehouseId'
 Request.belongsTo(User, { as: 'applicant', foreignKey: 'applicantId' });
 Request.belongsTo(User, { as: 'approver', foreignKey: 'approverId' });
 Request.belongsTo(User, { as: 'releaser', foreignKey: 'releaserId' });
-Request.belongsTo(Warehouse, { as: 'warehouse', foreignKey: 'warehouseId' });
+Request.belongsTo(Warehouse, { as: 'warehouse', foreignKey: 'warehouseId', constraints: false });
 User.hasMany(Request, { foreignKey: 'applicantId', as: 'requests' });
 Product.belongsTo(Warehouse, { foreignKey: 'warehouseId' });
 RequestItem.belongsTo(Request, { foreignKey: 'requestId', onDelete: 'CASCADE' });

@@ -14,6 +14,7 @@ const UPDATES_DIR  = path.join(ROOT, 'updates');
 const BACKUPS_DIR  = path.join(ROOT, 'updates', 'backups');
 const RELEASES_DIR = path.join(ROOT, 'releases');
 const UPDATE_LOG   = path.join(ROOT, 'update.log');
+const PACKAGE_WORK_DIR = path.join(UPDATES_DIR, '.package-sources');
 const MAX_STORED_PACKAGES = 3;
 
 const { getDeployTargets } = require('../deploy-targets');
@@ -100,6 +101,18 @@ function enforcePackageRetention() {
   const updatePackages = prunePackageDir(UPDATES_DIR);
   prunePackageDir(RELEASES_DIR);
   return updatePackages;
+}
+
+function sanitizeGitUrl(url) {
+  return String(url || '').replace(/:\/\/[^/@]+@/, '://***@');
+}
+
+function buildGithubCloneUrl(repo, token) {
+  if (!repo) return '';
+  const normalized = repo.replace(/^https:\/\/github\.com\//, '').replace(/\.git$/, '');
+  return token
+    ? `https://x-access-token:${token}@github.com/${normalized}.git`
+    : `https://github.com/${normalized}.git`;
 }
 
 function spawnRestart() {
@@ -408,45 +421,103 @@ router.post('/create-package', auth, adminOnly, async (req, res) => {
   const version = String(req.body?.version || '').trim();
   const buildFrontend = !!req.body?.buildFrontend;
   const sourceRootInput = String(req.body?.sourceRoot || '').trim();
+  const sourceMode = String(req.body?.sourceMode || '').trim();
+  const gitBranch = String(req.body?.gitBranch || process.env.UPDATE_GIT_BRANCH || 'main').trim();
 
   if (!version) return res.status(400).json({ error: 'version 값이 필요합니다.' });
   if (!/^[0-9A-Za-z._-]+$/.test(version)) {
     return res.status(400).json({ error: 'version 형식이 올바르지 않습니다. (영문/숫자/.-_ 만 허용)' });
   }
-
-  const packageRoot = sourceRootInput ? path.resolve(sourceRootInput) : ROOT;
-  const packageFrontendDir = path.join(packageRoot, 'frontend');
-
-  if (!fs.existsSync(path.join(packageRoot, 'backend', 'package.json'))) {
-    return res.status(400).json({ error: `유효한 소스 경로가 아닙니다. backend/package.json 없음: ${packageRoot}` });
+  if (sourceMode === 'git' && !/^[0-9A-Za-z._/-]+$/.test(gitBranch)) {
+    return res.status(400).json({ error: 'gitBranch 형식이 올바르지 않습니다.' });
   }
 
   const run = (cmd, args, cwd) => new Promise((resolve, reject) => {
     const isWin = process.platform === 'win32';
     // Windows에서 .cmd 파일은 shell: true 없이 spawn하면 EINVAL 발생
     const child = spawn(cmd, args, { cwd, shell: isWin });
+    let stdout = '';
     let stderr = '';
-    child.stdout.on('data', d => appendLog(String(d).trim()));
+    child.stdout.on('data', d => {
+      const line = String(d).trim();
+      stdout += String(d);
+      if (line) appendLog(line);
+    });
     child.stderr.on('data', d => {
       const line = String(d).trim();
       stderr += line + '\n';
-      appendLog(line);
+      if (line) appendLog(line);
     });
     child.on('close', (code) => {
-      if (code === 0) resolve();
+      if (code === 0) resolve(stdout.trim());
       else reject(new Error(stderr.trim() || `${cmd} 종료 코드: ${code}`));
     });
     child.on('error', reject);
   });
 
+  const prepareGitSource = async () => {
+    const configuredRepo =
+      process.env.UPDATE_GIT_REPO ||
+      buildGithubCloneUrl(process.env.GITHUB_REPO, process.env.GITHUB_TOKEN);
+    const remoteRepo = configuredRepo || await run('git', ['config', '--get', 'remote.origin.url'], ROOT);
+    if (!remoteRepo) {
+      throw new Error('Git 저장소 URL을 찾을 수 없습니다. UPDATE_GIT_REPO 또는 GITHUB_REPO를 설정하세요.');
+    }
+
+    fs.mkdirSync(PACKAGE_WORK_DIR, { recursive: true });
+    const workRoot = path.join(PACKAGE_WORK_DIR, `release-${Date.now()}`);
+    appendLog(`Git 소스 가져오기: ${sanitizeGitUrl(remoteRepo)} (${gitBranch})`);
+    await run('git', ['clone', '--depth', '1', '--branch', gitBranch, remoteRepo, workRoot], ROOT);
+    const commit = await run('git', ['rev-parse', '--short', 'HEAD'], workRoot);
+    appendLog(`Git 소스 준비 완료: ${gitBranch}@${commit}`);
+
+    return {
+      packageRoot: workRoot,
+      sourceInfo: { mode: 'git', repo: sanitizeGitUrl(remoteRepo), branch: gitBranch, commit },
+      cleanup: () => {
+        try { fs.rmSync(workRoot, { recursive: true, force: true }); } catch (e) {
+          appendLog(`Git 임시 소스 삭제 실패: ${e.message}`);
+        }
+      },
+    };
+  };
+
+  let preparedSource;
+
   try {
-    appendLog(`=== 업데이트 패키지 생성 시작: v${version} (source=${packageRoot}) ===`);
     fs.mkdirSync(UPDATES_DIR, { recursive: true });
     fs.mkdirSync(RELEASES_DIR, { recursive: true });
+
+    if (sourceMode === 'git') {
+      preparedSource = await prepareGitSource();
+    } else {
+      const packageRoot = sourceRootInput ? path.resolve(sourceRootInput) : ROOT;
+      preparedSource = {
+        packageRoot,
+        sourceInfo: {
+          mode: sourceRootInput ? 'path' : 'local',
+          root: packageRoot,
+        },
+        cleanup: null,
+      };
+    }
+
+    const { packageRoot, sourceInfo } = preparedSource;
+    const packageFrontendDir = path.join(packageRoot, 'frontend');
+
+    if (!fs.existsSync(path.join(packageRoot, 'backend', 'package.json'))) {
+      return res.status(400).json({ error: `유효한 소스 경로가 아닙니다. backend/package.json 없음: ${packageRoot}` });
+    }
+
+    appendLog(`=== 업데이트 패키지 생성 시작: v${version} (source=${sourceInfo.mode}, root=${packageRoot}) ===`);
 
     if (buildFrontend) {
       if (!fs.existsSync(path.join(packageFrontendDir, 'package.json'))) {
         return res.status(400).json({ error: '프론트엔드 소스가 없어 빌드를 실행할 수 없습니다.' });
+      }
+      if (!fs.existsSync(path.join(packageFrontendDir, 'node_modules'))) {
+        appendLog('프론트엔드 의존성 설치: npm ci');
+        await run('npm', ['ci'], packageFrontendDir);
       }
       appendLog('프론트엔드 빌드 실행: npm run build');
       await run('npm', ['run', 'build'], packageFrontendDir);
@@ -461,6 +532,7 @@ router.post('/create-package', auth, adminOnly, async (req, res) => {
     const manifest = {
       version,
       buildDate: new Date().toISOString().slice(0, 10),
+      source: sourceInfo,
       files: {},
     };
     const packageTargets = getDeployTargets(packageRoot);
@@ -491,12 +563,15 @@ router.post('/create-package', auth, adminOnly, async (req, res) => {
       uploadedFilename: filename,
       uploadedToUpdates: true,
       sourceRoot: packageRoot,
+      source: sourceInfo,
       buildFrontend,
       copied: [updateDest, releaseDest],
     });
   } catch (e) {
     appendLog(`업데이트 패키지 생성 오류: ${e.message}`);
     res.status(500).json({ error: e.message });
+  } finally {
+    if (preparedSource?.cleanup) preparedSource.cleanup();
   }
 });
 
