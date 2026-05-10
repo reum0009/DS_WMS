@@ -93,8 +93,8 @@ const productsAPI = {
   deletePermanent: (id) => axios.delete(`${API_BASE_URL}/products/${id}/permanent`, { headers: getAuthHeader() }),
   checkDuplicate: (data) => axios.post(`${API_BASE_URL}/products/check-duplicate`, data, { headers: getAuthHeader() }),
   generateBarcode: () => axios.get(`${API_BASE_URL}/products/next-barcode`, { headers: getAuthHeader() }),
-  printLabel: (data) => axios.post(`${API_BASE_URL}/products/print-label`, data, { headers: getAuthHeader() }),
-  printCommandLabel: (data) => axios.post(`${API_BASE_URL}/products/print-command-label`, data, { headers: getAuthHeader() }),
+  printLabel: (data) => printLabel(data),
+  printCommandLabel: (data) => printCommandLabel(data),
   recalculateSafetyStock: (data = {}) => axios.post(`${API_BASE_URL}/products/recalculate-safety-stock`, data, { headers: getAuthHeader() }),
   uploadCSV: (file) => {
     const formData = new FormData();
@@ -111,6 +111,126 @@ const warehousesAPI = {
   create: (data) => axios.post(`${API_BASE_URL}/warehouses`, data, { headers: getAuthHeader() }),
   update: (id, data) => axios.put(`${API_BASE_URL}/warehouses/${id}`, data, { headers: getAuthHeader() }),
   delete: (id) => axios.delete(`${API_BASE_URL}/warehouses/${id}`, { headers: getAuthHeader() })
+};
+
+const CODE128_PATTERNS = [
+  '212222','222122','222221','121223','121322','131222','122213','122312','132212','221213',
+  '221312','231212','112232','122132','122231','113222','123122','123221','223211','221132',
+  '221231','213212','223112','312131','311222','321122','321221','312212','322112','322211',
+  '212123','212321','232121','111323','131123','131321','112313','132113','132311','211313',
+  '231113','231311','112133','112331','132131','113123','113321','133121','313121','211331',
+  '231131','213113','213311','213131','311123','311321','331121','312113','312311','332111',
+  '314111','221411','431111','111224','111422','121124','121421','141122','141221','112214',
+  '112412','122114','122411','142112','142211','241211','221114','413111','241112','134111',
+  '111242','121142','121241','114212','124112','124211','411212','421112','421211','212141',
+  '214121','412121','111143','111341','131141','114113','114311','411113','411311','113141',
+  '114131','311141','411131','211412','211214','211232','2331112',
+];
+
+const COMMAND_LABELS = {
+  inbound: { barcode: 'W99999', productName: '입고바코드' },
+  outbound: { barcode: 'W99998', productName: '출고바코드' },
+};
+
+const escapeHtml = (value) => String(value ?? '')
+  .replace(/&/g, '&amp;')
+  .replace(/</g, '&lt;')
+  .replace(/>/g, '&gt;')
+  .replace(/"/g, '&quot;')
+  .replace(/'/g, '&#39;');
+
+const code128Bars = (text) => {
+  const value = String(text || '');
+  const codes = [104];
+  for (const ch of value) {
+    const code = ch.charCodeAt(0);
+    if (code < 32 || code > 126) throw new Error('바코드에 지원하지 않는 문자가 포함되어 있습니다.');
+    codes.push(code - 32);
+  }
+  let checksum = codes[0];
+  for (let i = 1; i < codes.length; i += 1) checksum += codes[i] * i;
+  codes.push(checksum % 103, 106);
+
+  const bars = [];
+  let x = 0;
+  for (const code of codes) {
+    const pattern = CODE128_PATTERNS[code];
+    for (let i = 0; i < pattern.length; i += 1) {
+      const width = parseInt(pattern[i], 10);
+      if (i % 2 === 0) bars.push({ x, w: width });
+      x += width;
+    }
+  }
+  return { bars, modules: x };
+};
+
+const buildBarcodeSvg = (barcode) => {
+  const { bars, modules } = code128Bars(barcode);
+  const width = 420;
+  const height = 112;
+  const moduleWidth = width / modules;
+  return `<svg viewBox="0 0 ${width} ${height}" width="100%" height="100%" preserveAspectRatio="none" aria-hidden="true">${
+    bars.map(bar => `<rect x="${(bar.x * moduleWidth).toFixed(3)}" y="0" width="${Math.max(1, bar.w * moduleWidth).toFixed(3)}" height="${height}" />`).join('')
+  }</svg>`;
+};
+
+const openBrowserLabelPrint = ({ productName, barcode }) => {
+  const labelName = String(productName || '').trim();
+  const labelBarcode = String(barcode || '').trim();
+  if (!labelName || !labelBarcode) throw new Error('출력할 바코드 정보가 없습니다.');
+
+  const popup = window.open('', 'wms_label_print', 'width=420,height=320');
+  if (!popup) throw new Error('인쇄 팝업이 차단되었습니다. 팝업 허용 후 다시 시도하세요.');
+
+  popup.document.open();
+  popup.document.write(`<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>${escapeHtml(labelBarcode)}</title>
+  <style>
+    @page label { size: 50mm 30mm; margin: 0; }
+    @page { size: 50mm 30mm; margin: 0; }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; padding: 0; overflow: hidden; }
+    body { font-family: "Malgun Gothic", Arial, sans-serif; color: #000; background: #fff; }
+    .page { page: label; position: absolute; left: 0; top: 0; width: 50mm; height: 30mm; overflow: hidden; background: #fff; }
+    .label { position: absolute; left: 1mm; top: 1mm; width: 48mm; height: 28mm; display: flex; flex-direction: column; align-items: stretch; overflow: hidden; transform: none; }
+    .title { height: 6mm; color: #fff; display: flex; align-items: center; justify-content: center; font-size: 7pt; font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; padding: 0 1mm; position: relative; z-index: 0; }
+    .title::before { content: ""; position: absolute; inset: 0; background: #000; z-index: -1; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+    .barcode { height: 12mm; margin-top: 1mm; }
+    .code { height: 4.5mm; margin-top: .6mm; display: flex; align-items: center; justify-content: center; font: 700 8.5pt Consolas, monospace; }
+    svg { display: block; fill: #000; }
+    @media screen { html, body { width: 50mm; height: 30mm; } body { background: #f3f4f6; } .page { background: #fff; outline: 1px solid #bbb; } }
+    @media print { html, body { width: 50mm !important; height: 30mm !important; } }
+  </style>
+</head>
+<body>
+  <div class="page">
+    <div class="label">
+      <div class="title">품목명 : ${escapeHtml(labelName)}</div>
+      <div class="barcode">${buildBarcodeSvg(labelBarcode)}</div>
+      <div class="code">${escapeHtml(labelBarcode)}</div>
+    </div>
+  </div>
+  <script>
+    window.addEventListener('load', function () {
+      setTimeout(function () { window.print(); }, 80);
+    });
+  </script>
+</body>
+</html>`);
+  popup.document.close();
+
+  return { data: { ok: true, browserPrint: true, productName: labelName, barcode: labelBarcode } };
+};
+
+const printLabel = async (data) => openBrowserLabelPrint(data || {});
+
+const printCommandLabel = async (data) => {
+  const command = COMMAND_LABELS[String(data?.type || '').trim()];
+  if (!command) throw new Error('지원하지 않는 명령 바코드입니다.');
+  return openBrowserLabelPrint(command);
 };
 
 const noticesAPI = {
