@@ -1276,7 +1276,7 @@ function ItemsPanel({ showMsg }) {
       onConfirm: async () => {
         try {
           setConfirmModal(null);
-          await productsAPI.printLabel({ productId: product.id, barcode: code.codeValue });
+          await productsAPI.printLabel({ productId: product.id, productName: product.productName, barcode: code.codeValue });
           showMsg('라벨 출력 요청 완료');
         } catch (e) {
           showMsg(e.response?.data?.error || '라벨 출력 실패', 'error');
@@ -2421,7 +2421,7 @@ function WarehousesPanel({ showMsg, currentUser }) {
   const isSystemAdmin = currentUser?.role === 'admin';
 
   const load = useCallback(() => {
-    warehousesAPI.getAll().then(r => setWarehouses(r.data || [])).catch(() => showMsg('로드 실패', 'error'));
+    warehousesAPI.getAll({ includeInactive: 1 }).then(r => setWarehouses(r.data || [])).catch(() => showMsg('로드 실패', 'error'));
   }, [showMsg]);
   useEffect(() => { load(); }, [load]);
   useEffect(() => {

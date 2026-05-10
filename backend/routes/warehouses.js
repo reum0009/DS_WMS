@@ -17,12 +17,21 @@ function buildScopeWhere(req) {
   return qDept ? { deptId: qDept } : {};
 }
 
+function shouldIncludeInactive(req) {
+  const canManageWarehouses = ['admin', 'dept_admin'].includes(req.user.role);
+  return canManageWarehouses && ['1', 'true', 'yes'].includes(String(req.query.includeInactive || '').toLowerCase());
+}
+
 // Get all warehouses
 router.get('/', auth, async (req, res) => {
   try {
     if (!ensureDeptAdminHasDept(req, res)) return;
     const { Warehouse } = global.sequelize.models;
-    const warehouses = await Warehouse.findAll({ where: buildScopeWhere(req) });
+    const where = {
+      ...buildScopeWhere(req),
+      ...(shouldIncludeInactive(req) ? {} : { isActive: true })
+    };
+    const warehouses = await Warehouse.findAll({ where });
     res.json(warehouses);
   } catch (err) {
     res.status(500).json({ error: err.message });

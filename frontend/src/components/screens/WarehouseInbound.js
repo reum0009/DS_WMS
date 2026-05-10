@@ -2215,10 +2215,6 @@ function EditModal({ warehouses, editSearch, setEditSearch, onClose, initialRefe
                   style={{ width: '100%', background: '#1c2128', border: '1px solid #30363d', borderRadius: 6, color: '#e6edf3', padding: '7px 10px', fontSize: 12, boxSizing: 'border-box', cursor: 'pointer' }}>
                   <option value="">전체 창고</option>
                   {warehouses.map(w => <option key={w.id} value={w.id}>{w.warehouseName}</option>)}
-                  {warehouses.length === 0 && <>
-                    <option value="1">본사 창고</option>
-                    <option value="2">제2 창고</option>
-                  </>}
                 </select>
               </div>
 
