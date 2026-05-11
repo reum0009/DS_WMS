@@ -56,7 +56,10 @@
       "Bash(git commit *)",
       "Bash(git push *)",
       "Bash(gh pr create --title 260507_01_NOH --body ' *)",
-      "PowerShell(gh pr create --title \"260507_01_NOH\" --body \"## Summary`n- categories, products, system, update ���Ʈ ����`n- AdminDashboard, api.js ������Ʈ`n- backend/routes/system.js �ű� �߰�`n- version.json ������Ʈ`n`n Generated with Claude Code\" --base main --head WMS 2>&1)"
+      "PowerShell(gh pr create --title \"260507_01_NOH\" --body \"## Summary`n- categories, products, system, update ���Ʈ ����`n- AdminDashboard, api.js ������Ʈ`n- backend/routes/system.js �ű� �߰�`n- version.json ������Ʈ`n`n Generated with Claude Code\" --base main --head WMS 2>&1)",
+      "Bash(git -C \"c:\\\\Users\\\\구름\\\\Desktop\\\\DS_WMS\" status --short)",
+      "Bash(git -C \"c:\\\\Users\\\\구름\\\\Desktop\\\\DS_WMS\" log --oneline -5 -- frontend/build/)",
+      "Bash(npm --prefix \"c:\\\\Users\\\\구름\\\\Desktop\\\\DS_WMS\\\\frontend\" run build)"
     ]
   }
 }
