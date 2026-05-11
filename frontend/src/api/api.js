@@ -189,20 +189,20 @@ const openBrowserLabelPrint = ({ productName, barcode }) => {
   <meta charset="utf-8" />
   <title>${escapeHtml(labelBarcode)}</title>
   <style>
-    @page label { size: 50mm 30mm; margin: 0; }
-    @page { size: 50mm 30mm; margin: 0; }
+    @page label { size: 30mm 50mm; margin: 0; }
+    @page { size: 30mm 50mm; margin: 0; }
     * { box-sizing: border-box; }
     html, body { margin: 0; padding: 0; overflow: hidden; }
     body { font-family: "Malgun Gothic", Arial, sans-serif; color: #000; background: #fff; }
-    .page { page: label; position: absolute; left: 0; top: 0; width: 50mm; height: 30mm; overflow: hidden; background: #fff; }
-    .label { position: absolute; left: 1mm; top: 1mm; width: 48mm; height: 28mm; display: flex; flex-direction: column; align-items: stretch; overflow: hidden; transform: none; }
+    .page { page: label; position: absolute; left: 0; top: 0; width: 30mm; height: 50mm; overflow: hidden; background: #fff; }
+    .label { position: absolute; left: 0; top: 0; width: 50mm; height: 30mm; padding: 3mm 1.5mm 0 0.5mm; display: flex; flex-direction: column; align-items: stretch; overflow: hidden; transform-origin: top left; transform: translate(0, 50mm) rotate(-90deg); }
     .title { height: 6mm; color: #fff; display: flex; align-items: center; justify-content: center; font-size: 7pt; font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; padding: 0 1mm; position: relative; z-index: 0; }
     .title::before { content: ""; position: absolute; inset: 0; background: #000; z-index: -1; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
-    .barcode { height: 12mm; margin-top: 1mm; }
+    .barcode { height: 12mm; margin-top: 2mm; }
     .code { height: 4.5mm; margin-top: .6mm; display: flex; align-items: center; justify-content: center; font: 700 8.5pt Consolas, monospace; }
     svg { display: block; fill: #000; }
-    @media screen { html, body { width: 50mm; height: 30mm; } body { background: #f3f4f6; } .page { background: #fff; outline: 1px solid #bbb; } }
-    @media print { html, body { width: 50mm !important; height: 30mm !important; } }
+    @media screen { html, body { width: 30mm; height: 50mm; } body { background: #f3f4f6; } .page { background: #fff; outline: 1px solid #bbb; } }
+    @media print { html, body { width: 30mm !important; height: 50mm !important; } }
   </style>
 </head>
 <body>

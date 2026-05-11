@@ -25,7 +25,8 @@ $paperHeight = [int]($data.paperHeightHundredths -as [int])
 if ($paperWidth -le 0) { $paperWidth = 197 }
 if ($paperHeight -le 0) { $paperHeight = 118 }
 
-$doc.DefaultPageSettings.PaperSize = New-Object System.Drawing.Printing.PaperSize('WMS Label', $paperWidth, $paperHeight)
+$doc.DefaultPageSettings.PaperSize = New-Object System.Drawing.Printing.PaperSize('WMS Label', $paperHeight, $paperWidth)
+$doc.DefaultPageSettings.Landscape = $false
 $doc.DefaultPageSettings.Margins = New-Object System.Drawing.Printing.Margins(0, 0, 0, 0)
 $doc.OriginAtMargins = $false
 $doc.PrintController = New-Object System.Drawing.Printing.StandardPrintController
@@ -37,7 +38,10 @@ $doc.add_PrintPage({
   $g.PageUnit = [System.Drawing.GraphicsUnit]::Display
   $offsetX = [single]($data.offsetX -as [double])
   $offsetY = [single]($data.offsetY -as [double])
-  $g.TranslateTransform(([single](-$e.PageSettings.HardMarginX) + $offsetX), ([single](-$e.PageSettings.HardMarginY) + $offsetY))
+  # Rotate 90° CCW: landscape content fits portrait paper (printers expecting 30mm×50mm portrait)
+  $g.TranslateTransform(0, [single]$paperWidth)
+  $g.RotateTransform(-90)
+  $g.TranslateTransform($offsetX, $offsetY)
   $g.SmoothingMode = [System.Drawing.Drawing2D.SmoothingMode]::None
   $g.TextRenderingHint = [System.Drawing.Text.TextRenderingHint]::SingleBitPerPixelGridFit
 
