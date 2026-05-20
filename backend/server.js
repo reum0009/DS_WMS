@@ -739,6 +739,7 @@ try {
   app.use('/api/gw-mapping',         require('./routes/gwMapping'));
   app.use('/api/system',             require('./routes/system'));
   app.use('/api/update',             require('./routes/update'));
+  app.use('/api/compuzone', require('./routes/compuzone'));
 } catch (err) {
   console.error('Route loading error:', err);
   process.exit(1);
