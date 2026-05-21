@@ -3,7 +3,7 @@ import {
   usersAPI, warehousesAPI, productsAPI,
   categoriesAPI, suppliersAPI, stockHistoryAPI, invitationsAPI,
   gwMappingAPI,
-  dbConfigAPI, noticesAPI,
+  dbConfigAPI, noticesAPI, purchaseCartAPI,
 } from '../../api/api';
 
 // ── 단위 목록 ─────────────────────────────────────────────────────
@@ -166,6 +166,7 @@ export default function AdminDashboard({ user, onLogout }) {
       case 'notices':    return <NoticesPanel    showMsg={showMsg} />;
       case 'items':      return <ItemsPanel       showMsg={showMsg} />;
       case 'categories': return <CategoriesPanel  showMsg={showMsg} currentUser={user} />;
+      case 'purchaseCart': return <PurchaseCartPanel showMsg={showMsg} currentUser={user} />;
       case 'warehouses': return <WarehousesPanel  showMsg={showMsg} currentUser={user} />;
       case 'policy':     return <PolicyPanel      showMsg={showMsg} />;
       case 'suppliers':  return <SuppliersPanel   showMsg={showMsg} />;
@@ -271,6 +272,7 @@ const MENUS = [
   { id: 'notices',    icon: '!', label: '공지사항 관리' },
   { id: 'items',      icon: '▦', label: '품목 관리' },
   { id: 'categories', icon: '≡', label: '카테고리 관리' },
+  { id: 'purchaseCart', icon: '▣', label: '장바구니' },
   { id: 'warehouses', icon: '⌂', label: '창고 관리' },
   { id: 'policy',     icon: '⚙', label: '재고 정책' },
   { id: 'suppliers',  icon: '◑', label: '공급업체 관리' },
@@ -1704,8 +1706,64 @@ function ItemsPanel({ showMsg }) {
 // ─────────────────────────────────────────────────────────────────
 const LEVEL_LABEL = ['', '부서(L1)', '분류(L2)', '대분류(L3)', '중분류(L4)', '소분류(L5)'];
 
+const formatWon = (value) => `${Number(value || 0).toLocaleString()}원`;
+const sourceLabel = (source) => {
+  const type = source?.type || 'manual';
+  if (type === 'compuzone') return '컴퓨존';
+  if (type === 'external') return '외부';
+  return '수동';
+};
+const sourceBadgeColor = (source) => {
+  const type = source?.type || 'manual';
+  if (type === 'compuzone') return 'blue';
+  if (type === 'external') return 'purple';
+  return 'gray';
+};
+const productImageUrl = (product) => product?.source?.thumbnailUrl || product?.source?.imageUrl || '';
+const productLabel = (product) => [product?.productName, product?.specification].filter(Boolean).join(' / ');
+
+function ProductThumb({ product, onOpen }) {
+  const src = productImageUrl(product);
+  return (
+    <button
+      type="button"
+      onClick={() => src && onOpen && onOpen(product)}
+      title={src ? '이미지 크게 보기' : '이미지 없음'}
+      style={{
+        width: 54, height: 54, borderRadius: 6, border: '1px solid #30363d',
+        background: '#0d1117', color: '#8b949e', overflow: 'hidden',
+        display: 'flex', alignItems: 'center', justifyContent: 'center',
+        cursor: src ? 'zoom-in' : 'default', padding: 0, flexShrink: 0,
+      }}
+    >
+      {src ? (
+        <img src={src} alt="" style={{ width: '100%', height: '100%', objectFit: 'contain', display: 'block' }} />
+      ) : (
+        <span style={{ fontSize: 10, lineHeight: 1.3 }}>NO<br />IMG</span>
+      )}
+    </button>
+  );
+}
+
+function ImagePreviewModal({ product, onClose }) {
+  const src = productImageUrl(product);
+  if (!product || !src) return null;
+  return (
+    <Modal title={productLabel(product) || '상품 이미지'} onClose={onClose} width={760}>
+      <div style={{ background: '#0d1117', border: '1px solid #30363d', borderRadius: 8, padding: 16, textAlign: 'center' }}>
+        <img src={src} alt="" style={{ maxWidth: '100%', maxHeight: '70vh', objectFit: 'contain' }} />
+      </div>
+      {product.source?.productUrl && (
+        <div style={{ marginTop: 12, textAlign: 'right' }}>
+          <a href={product.source.productUrl} target="_blank" rel="noreferrer" style={{ color: '#58a6ff', fontSize: 13 }}>상품 페이지 열기</a>
+        </div>
+      )}
+    </Modal>
+  );
+}
+
 // 재귀 트리 노드
-function TreeNode({ node, depth = 0, onAdd, onEdit, onDelete, onMove,
+function TreeNode({ node, depth = 0, onAdd, onEdit, onDelete, onMove, onCart,
                     dragState, onDragStart, onDragEnter, onDragLeave, onDrop, onDragEnd,
                     closedIds, onToggle, canDropChild }) {
   const color = node.color || '#8b949e';
@@ -1815,6 +1873,10 @@ function TreeNode({ node, depth = 0, onAdd, onEdit, onDelete, onMove,
               padding: '2px 8px', borderRadius: 3, cursor: 'pointer', fontSize: 11,
             }}>이동</button>
           )}
+          <button onClick={() => onCart && onCart(node)} title="이 카테고리 품목을 장바구니에 담기" style={{
+            background: 'none', border: '1px solid #9e6a03', color: '#e3b341',
+            padding: '2px 8px', borderRadius: 3, cursor: 'pointer', fontSize: 11,
+          }}>담기</button>
           <button onClick={() => onEdit(node)} style={{
             background: 'none', border: '1px solid #30363d', color: '#8b949e',
             padding: '2px 8px', borderRadius: 3, cursor: 'pointer', fontSize: 11,
@@ -1836,7 +1898,7 @@ function TreeNode({ node, depth = 0, onAdd, onEdit, onDelete, onMove,
         <div style={{ borderLeft: `1px solid ${color}33`, marginLeft: 18, paddingLeft: 4 }}>
           {node.children.map(child => (
             <TreeNode key={child.id} node={child} depth={depth + 1}
-              onAdd={onAdd} onEdit={onEdit} onDelete={onDelete} onMove={onMove}
+              onAdd={onAdd} onEdit={onEdit} onDelete={onDelete} onMove={onMove} onCart={onCart}
               dragState={dragState} onDragStart={onDragStart}
               onDragEnter={onDragEnter} onDragLeave={onDragLeave} onDrop={onDrop} onDragEnd={onDragEnd}
               closedIds={closedIds} onToggle={onToggle} canDropChild={canDropChild} />
@@ -1860,6 +1922,8 @@ function CategoriesPanel({ showMsg, currentUser }) {
   const [saving,       setSaving]       = useState(false);
   // 이동 모달: { node, candidates: [{id,name,path}], selectedId }
   const [moveModal,    setMoveModal]    = useState(null);
+  const [purchaseModal, setPurchaseModal] = useState(null);
+  const [imagePreview, setImagePreview] = useState(null);
   // 드래그 상태: { dragId, dragLevel, dragParentId, overId }
   const [dragState,    setDragState]    = useState(null);
   // 접힌 노드 ID Set — 없으면 기본 펼침
@@ -1996,6 +2060,69 @@ function CategoriesPanel({ showMsg, currentUser }) {
       canMoveUnderParent(node, c)
     );
     setMoveModal({ node, candidates, selectedId: candidates[0]?.id || '' });
+  };
+
+  const openPurchasePicker = async (node) => {
+    setPurchaseModal({ node, loading: true, products: [], selected: {}, quantities: {} });
+    try {
+      const res = await purchaseCartAPI.getCatalog({ categoryId: node.id, includeDescendants: 1 });
+      const products = res.data?.products || [];
+      if (products.length === 0) {
+        setPurchaseModal(null);
+        showMsg('이 카테고리에 장바구니에 담을 품목이 없습니다', 'error');
+        return;
+      }
+      const selected = {};
+      const quantities = {};
+      products.forEach((p, idx) => {
+        selected[p.id] = products.length === 1 || idx === 0;
+        quantities[p.id] = 1;
+      });
+      setPurchaseModal({ node, loading: false, products, selected, quantities });
+    } catch (e) {
+      setPurchaseModal(null);
+      showMsg(e.response?.data?.error || '구매 품목 로드 실패', 'error');
+    }
+  };
+
+  const setPurchaseSelected = (productId, checked) => {
+    setPurchaseModal(m => m ? ({ ...m, selected: { ...m.selected, [productId]: checked } }) : m);
+  };
+
+  const setPurchaseQuantity = (productId, value) => {
+    const quantity = Math.max(1, parseInt(value, 10) || 1);
+    setPurchaseModal(m => m ? ({ ...m, quantities: { ...m.quantities, [productId]: quantity } }) : m);
+  };
+
+  const refreshPurchaseImage = async (product) => {
+    try {
+      await purchaseCartAPI.refreshImage(product.id, { sourceId: product.source?.id || undefined });
+      const res = await purchaseCartAPI.getCatalog({ categoryId: purchaseModal.node.id, includeDescendants: 1 });
+      const products = res.data?.products || [];
+      setPurchaseModal(m => m ? ({ ...m, products }) : m);
+      showMsg('이미지 갱신 완료');
+    } catch (e) {
+      showMsg(e.response?.data?.error || '이미지 갱신 실패', 'error');
+    }
+  };
+
+  const addSelectedToCart = async () => {
+    if (!purchaseModal) return;
+    const selectedProducts = (purchaseModal.products || []).filter(p => purchaseModal.selected?.[p.id]);
+    if (selectedProducts.length === 0) return showMsg('담을 품목을 선택하세요', 'error');
+    try {
+      for (const product of selectedProducts) {
+        await purchaseCartAPI.addItem({
+          productId: product.id,
+          sourceId: product.source?.id || undefined,
+          quantity: purchaseModal.quantities?.[product.id] || 1,
+        });
+      }
+      showMsg(`${selectedProducts.length}개 품목을 장바구니에 담았습니다`);
+      setPurchaseModal(null);
+    } catch (e) {
+      showMsg(e.response?.data?.error || '장바구니 담기 실패', 'error');
+    }
   };
 
   const handleMoveConfirm = async () => {
@@ -2148,7 +2275,8 @@ function CategoriesPanel({ showMsg, currentUser }) {
       let n = flatAll.find(x => x.id === id);
       while (n) {
         if (n.level === 1) return n;
-        n = n.parentId ? flatAll.find(x => x.id === n.parentId) : null;
+        const parentId = n.parentId;
+        n = parentId ? flatAll.find(x => x.id === parentId) : null;
       }
       return null;
     };
@@ -2199,6 +2327,7 @@ function CategoriesPanel({ showMsg, currentUser }) {
             tree.map(dept => (
               <div key={dept.id} style={{ marginBottom: 12, borderBottom: '1px solid #21262d', paddingBottom: 12 }}>
                 <TreeNode node={dept} depth={0} onAdd={openAdd} onEdit={openEdit} onDelete={openDelete} onMove={openMove}
+                  onCart={openPurchasePicker}
                   dragState={dragState} onDragStart={handleDragStart}
                   onDragEnter={handleDragEnter} onDragLeave={handleDragLeave} onDrop={handleDrop} onDragEnd={handleDragEnd}
                   closedIds={closedIds} onToggle={handleToggle} canDropChild={canDropChild} />
@@ -2349,6 +2478,96 @@ function CategoriesPanel({ showMsg, currentUser }) {
         </Modal>
       )}
 
+      {purchaseModal && (
+        <Modal title={`장바구니 담기 — ${purchaseModal.node?.name || ''}`} onClose={() => setPurchaseModal(null)} width={900}>
+          {purchaseModal.loading ? (
+            <div style={{ color: '#8b949e', padding: 32, textAlign: 'center' }}>품목을 불러오는 중...</div>
+          ) : (
+            <>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12, gap: 12 }}>
+                <div style={{ color: '#8b949e', fontSize: 12 }}>
+                  {purchaseModal.products.length === 1
+                    ? '수량을 정해서 장바구니에 담습니다.'
+                    : '여러 품목 중 구매할 항목과 수량을 선택하세요.'}
+                </div>
+                <Badge color="blue">{purchaseModal.products.length}개 품목</Badge>
+              </div>
+
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 8, maxHeight: '58vh', overflowY: 'auto', paddingRight: 4 }}>
+                {purchaseModal.products.map(product => {
+                  const selected = !!purchaseModal.selected?.[product.id];
+                  const source = product.source || {};
+                  return (
+                    <div key={product.id} style={{
+                      display: 'grid',
+                      gridTemplateColumns: '28px 58px minmax(220px, 1fr) 110px 86px 92px',
+                      gap: 10,
+                      alignItems: 'center',
+                      background: selected ? '#0d2044' : '#0d1117',
+                      border: `1px solid ${selected ? '#58a6ff' : '#30363d'}`,
+                      borderRadius: 8,
+                      padding: 10,
+                    }}>
+                      <input
+                        type="checkbox"
+                        checked={selected}
+                        onChange={e => setPurchaseSelected(product.id, e.target.checked)}
+                        style={{ accentColor: '#58a6ff' }}
+                      />
+                      <ProductThumb product={product} onOpen={setImagePreview} />
+                      <div style={{ minWidth: 0 }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap', marginBottom: 4 }}>
+                          <span style={{ color: '#e6edf3', fontSize: 13, fontWeight: 700 }}>{product.productName}</span>
+                          <Badge color={sourceBadgeColor(source)}>{sourceLabel(source)}</Badge>
+                          {source.sourceCount > 1 && <Badge color="yellow">구매처 {source.sourceCount}</Badge>}
+                        </div>
+                        <div style={{ color: '#8b949e', fontSize: 12, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                          {product.specification || product.productCode}
+                        </div>
+                        <div style={{ display: 'flex', gap: 10, marginTop: 5, fontSize: 11 }}>
+                          {source.productUrl ? (
+                            <a href={source.productUrl} target="_blank" rel="noreferrer" style={{ color: '#58a6ff' }}>상품 페이지</a>
+                          ) : (
+                            <span style={{ color: '#f0883e' }}>구매 URL 없음</span>
+                          )}
+                          <button onClick={() => refreshPurchaseImage(product)} style={{
+                            background: 'none', border: 'none', padding: 0, color: '#8b949e', cursor: 'pointer', fontSize: 11,
+                          }}>이미지 갱신</button>
+                        </div>
+                      </div>
+                      <div style={{ textAlign: 'right', color: '#e6edf3', fontSize: 13, fontWeight: 700 }}>
+                        {formatWon(product.unitPrice)}
+                      </div>
+                      <input
+                        type="number"
+                        min="1"
+                        value={purchaseModal.quantities?.[product.id] || 1}
+                        onChange={e => setPurchaseQuantity(product.id, e.target.value)}
+                        style={{ ...inputStyle, padding: '6px 8px', fontSize: 13, textAlign: 'right' }}
+                      />
+                      <div style={{ textAlign: 'right', color: '#8b949e', fontSize: 12 }}>
+                        재고 {Number(product.currentStock || 0).toLocaleString()}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+
+              <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 18 }}>
+                <button onClick={() => setPurchaseModal(null)} style={{
+                  background: 'none', border: '1px solid #30363d', color: '#8b949e',
+                  padding: '8px 18px', borderRadius: 6, cursor: 'pointer', fontSize: 13,
+                }}>취소</button>
+                <button onClick={addSelectedToCart} style={{
+                  background: '#238636', border: '1px solid #2ea043', color: '#fff',
+                  padding: '8px 18px', borderRadius: 6, cursor: 'pointer', fontSize: 13, fontWeight: 700,
+                }}>장바구니 담기</button>
+              </div>
+            </>
+          )}
+        </Modal>
+      )}
+
       {/* ── 이동 모달 ── */}
       {moveModal && (
         <Modal title={`"${moveModal.node.name}" 이동 — ${LEVEL_LABEL[moveModal.node.level]}`}
@@ -2403,6 +2622,7 @@ function CategoriesPanel({ showMsg, currentUser }) {
         </Modal>
       )}
 
+      <ImagePreviewModal product={imagePreview} onClose={() => setImagePreview(null)} />
       {confirmModal && <ConfirmModal {...confirmModal} onCancel={() => setConfirmModal(null)} />}
     </div>
   );
@@ -3777,6 +3997,240 @@ function DbConfigPanel({ showMsg }) {
       <div style={{ marginTop: 16, background: '#0d1117', border: '1px solid #21262d', borderRadius: 8, padding: 16, color: '#8b949e', fontSize: 12, lineHeight: 1.7 }}>
         저장한 설정은 <code style={{ color: '#c9d1d9' }}>backend/.env</code>에 반영됩니다. 이미 실행 중인 백엔드는 기존 DB 연결을 유지하므로 서비스 재실행 후 새 DB가 적용됩니다.
       </div>
+    </div>
+  );
+}
+
+function PurchaseCartPanel({ showMsg, currentUser }) {
+  const [cart, setCart] = useState({ items: [], totalQuantity: 0, totalAmount: 0 });
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [imagePreview, setImagePreview] = useState(null);
+  const [result, setResult] = useState(null);
+  const [form, setForm] = useState({
+    corp: '',
+    title: '컴퓨존 구매 건',
+    requester: currentUser?.name || '',
+    memo: '',
+    allowPartial: false,
+  });
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    try {
+      const res = await purchaseCartAPI.getCart();
+      setCart(res.data || { items: [], totalQuantity: 0, totalAmount: 0 });
+    } catch (e) {
+      showMsg(e.response?.data?.error || '장바구니 로드 실패', 'error');
+    } finally {
+      setLoading(false);
+    }
+  }, [showMsg]);
+
+  useEffect(() => { load(); }, [load]);
+
+  const changeQty = async (item, quantity) => {
+    const nextQty = Math.max(0, parseInt(quantity, 10) || 0);
+    try {
+      const res = await purchaseCartAPI.updateItem(item.cartItemId, { quantity: nextQty });
+      setCart(res.data);
+    } catch (e) {
+      showMsg(e.response?.data?.error || '수량 변경 실패', 'error');
+    }
+  };
+
+  const removeItem = async (item) => {
+    try {
+      const res = await purchaseCartAPI.removeItem(item.cartItemId);
+      setCart(res.data);
+    } catch (e) {
+      showMsg(e.response?.data?.error || '삭제 실패', 'error');
+    }
+  };
+
+  const clearCart = async () => {
+    try {
+      const res = await purchaseCartAPI.clear();
+      setCart(res.data);
+      setResult(null);
+      showMsg('장바구니를 비웠습니다');
+    } catch (e) {
+      showMsg(e.response?.data?.error || '장바구니 비우기 실패', 'error');
+    }
+  };
+
+  const refreshImage = async (item) => {
+    try {
+      await purchaseCartAPI.refreshImage(item.product.id, { sourceId: item.product.source?.id || undefined });
+      await load();
+      showMsg('이미지 갱신 완료');
+    } catch (e) {
+      showMsg(e.response?.data?.error || '이미지 갱신 실패', 'error');
+    }
+  };
+
+  const checkout = async () => {
+    setSaving(true);
+    setResult(null);
+    try {
+      const res = await purchaseCartAPI.checkout(form);
+      setResult(res.data);
+      showMsg('Purchase_Auto 구매 작업을 생성했습니다');
+    } catch (e) {
+      const data = e.response?.data;
+      setResult(data || null);
+      showMsg(data?.error || '구매 작업 생성 실패', 'error');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const split = useMemo(() => {
+    const compuzone = [];
+    const manual = [];
+    const blocked = [];
+    (cart.items || []).forEach(item => {
+      const source = item.product?.source || {};
+      if (source.type === 'compuzone' && source.productUrl && source.isPurchasable) compuzone.push(item);
+      else if (source.type === 'manual' || !source.type) manual.push(item);
+      else blocked.push(item);
+    });
+    return { compuzone, manual, blocked };
+  }, [cart.items]);
+
+  return (
+    <div>
+      <SectionHeader
+        title="장바구니"
+        subtitle="카테고리에서 담은 품목을 컴퓨존 구매 작업으로 넘깁니다"
+        action={cart.items?.length ? <button onClick={clearCart} style={{
+          background: 'none', border: '1px solid #3a1a1a', color: '#f85149',
+          padding: '8px 14px', borderRadius: 6, cursor: 'pointer', fontSize: 13,
+        }}>비우기</button> : null}
+      />
+
+      {loading ? (
+        <div style={{ color: '#8b949e', padding: 40, textAlign: 'center' }}>불러오는 중...</div>
+      ) : cart.items.length === 0 ? (
+        <div style={{ background: '#161b22', border: '1px solid #21262d', borderRadius: 8, padding: 40, textAlign: 'center', color: '#8b949e' }}>
+          카테고리 관리에서 품목을 장바구니에 담으세요.
+        </div>
+      ) : (
+        <>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 320px', gap: 18, alignItems: 'start' }}>
+            <div style={{ background: '#161b22', border: '1px solid #21262d', borderRadius: 8, overflow: 'hidden' }}>
+              <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
+                <thead style={{ background: '#1c2128' }}>
+                  <tr>
+                    {['상품', '구매처', '단가', '수량', '금액', ''].map(h => (
+                      <th key={h} style={{ textAlign: h === '상품' ? 'left' : 'right', padding: '10px 12px', color: '#8b949e', fontWeight: 500, borderBottom: '1px solid #21262d' }}>{h}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {cart.items.map(item => {
+                    const product = item.product || {};
+                    const source = product.source || {};
+                    return (
+                      <tr key={item.cartItemId} style={{ borderBottom: '1px solid #21262d' }}>
+                        <td style={{ padding: '10px 12px' }}>
+                          <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
+                            <ProductThumb product={product} onOpen={setImagePreview} />
+                            <div style={{ minWidth: 0 }}>
+                              <div style={{ color: '#e6edf3', fontWeight: 700 }}>{product.productName}</div>
+                              <div style={{ color: '#8b949e', fontSize: 12, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: 320 }}>{product.specification || product.productCode}</div>
+                              <div style={{ display: 'flex', gap: 10, marginTop: 5, fontSize: 11 }}>
+                                {source.productUrl ? <a href={source.productUrl} target="_blank" rel="noreferrer" style={{ color: '#58a6ff' }}>상품 페이지</a> : <span style={{ color: '#f0883e' }}>URL 없음</span>}
+                                <button onClick={() => refreshImage(item)} style={{ background: 'none', border: 'none', padding: 0, color: '#8b949e', cursor: 'pointer', fontSize: 11 }}>이미지 갱신</button>
+                              </div>
+                            </div>
+                          </div>
+                        </td>
+                        <td style={{ padding: '10px 12px', textAlign: 'right' }}><Badge color={sourceBadgeColor(source)}>{sourceLabel(source)}</Badge></td>
+                        <td style={{ padding: '10px 12px', textAlign: 'right', color: '#e6edf3' }}>{formatWon(product.unitPrice)}</td>
+                        <td style={{ padding: '10px 12px', textAlign: 'right' }}>
+                          <input type="number" min="0" value={item.quantity} onChange={e => changeQty(item, e.target.value)}
+                            style={{ ...inputStyle, width: 70, padding: '6px 8px', textAlign: 'right', fontSize: 13 }} />
+                        </td>
+                        <td style={{ padding: '10px 12px', textAlign: 'right', color: '#e6edf3', fontWeight: 700 }}>{formatWon(item.subtotal)}</td>
+                        <td style={{ padding: '10px 12px', textAlign: 'right' }}>
+                          <button onClick={() => removeItem(item)} style={{
+                            background: 'none', border: '1px solid #3a1a1a', color: '#f85149',
+                            padding: '4px 8px', borderRadius: 4, cursor: 'pointer', fontSize: 12,
+                          }}>삭제</button>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+
+            <div style={{ background: '#161b22', border: '1px solid #21262d', borderRadius: 8, padding: 16 }}>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, marginBottom: 14 }}>
+                <div style={{ background: '#0d1117', border: '1px solid #30363d', borderRadius: 6, padding: 10 }}>
+                  <div style={{ color: '#8b949e', fontSize: 12 }}>총 수량</div>
+                  <div style={{ color: '#e6edf3', fontSize: 20, fontWeight: 800 }}>{cart.totalQuantity.toLocaleString()}</div>
+                </div>
+                <div style={{ background: '#0d1117', border: '1px solid #30363d', borderRadius: 6, padding: 10 }}>
+                  <div style={{ color: '#8b949e', fontSize: 12 }}>예상 금액</div>
+                  <div style={{ color: '#e6edf3', fontSize: 20, fontWeight: 800 }}>{formatWon(cart.totalAmount)}</div>
+                </div>
+              </div>
+
+              <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 14 }}>
+                <Badge color="blue">컴퓨존 {split.compuzone.length}</Badge>
+                <Badge color="gray">수동 {split.manual.length}</Badge>
+                <Badge color="purple">외부 {split.blocked.length}</Badge>
+              </div>
+
+              {(split.manual.length || split.blocked.length) > 0 && (
+                <div style={{ background: '#3a2e00', border: '1px solid #9e6a03', color: '#e3b341', borderRadius: 6, padding: 10, fontSize: 12, lineHeight: 1.5, marginBottom: 14 }}>
+                  컴퓨존 자동구매가 안 되는 항목이 포함되어 있습니다. 기본은 막아두고, 아래 옵션을 켜면 컴퓨존 상품만 먼저 구매 작업으로 넘깁니다.
+                </div>
+              )}
+
+              <Field label="법인/회사 *">
+                <input value={form.corp} onChange={e => setForm(f => ({ ...f, corp: e.target.value }))} style={inputStyle} placeholder="예: 대승정밀" />
+              </Field>
+              <Field label="품의 제목 *">
+                <input value={form.title} onChange={e => setForm(f => ({ ...f, title: e.target.value }))} style={inputStyle} />
+              </Field>
+              <Field label="요청자 *">
+                <input value={form.requester} onChange={e => setForm(f => ({ ...f, requester: e.target.value }))} style={inputStyle} />
+              </Field>
+              <Field label="메모">
+                <textarea value={form.memo} onChange={e => setForm(f => ({ ...f, memo: e.target.value }))} style={{ ...inputStyle, minHeight: 86, resize: 'vertical' }} placeholder="공장/부서/대상자/용도 등" />
+              </Field>
+              <label style={{ display: 'flex', alignItems: 'center', gap: 8, color: '#c9d1d9', fontSize: 13, marginBottom: 14 }}>
+                <input type="checkbox" checked={form.allowPartial} onChange={e => setForm(f => ({ ...f, allowPartial: e.target.checked }))} style={{ accentColor: '#58a6ff' }} />
+                컴퓨존 상품만 먼저 구매 작업 생성
+              </label>
+              <button onClick={checkout} disabled={saving || split.compuzone.length === 0} style={{
+                width: '100%', background: saving || split.compuzone.length === 0 ? '#30363d' : '#238636',
+                border: `1px solid ${saving || split.compuzone.length === 0 ? '#444c56' : '#2ea043'}`,
+                color: '#fff', padding: '10px 14px', borderRadius: 6,
+                cursor: saving || split.compuzone.length === 0 ? 'not-allowed' : 'pointer', fontSize: 14, fontWeight: 800,
+              }}>{saving ? '생성 중...' : 'Purchase_Auto 작업 생성'}</button>
+            </div>
+          </div>
+
+          {result && (
+            <div style={{ marginTop: 16, background: result.error ? '#3a1a1a' : '#1a3a2a', border: `1px solid ${result.error ? '#f85149' : '#3fb950'}`, borderRadius: 8, padding: 14, color: result.error ? '#f85149' : '#3fb950', fontSize: 13 }}>
+              {result.error ? (
+                <div>{result.error}</div>
+              ) : (
+                <div>
+                  구매 작업 생성 완료
+                  {result.purchaseJob?.job_id && <span style={{ marginLeft: 8, fontFamily: 'monospace' }}>{result.purchaseJob.job_id}</span>}
+                </div>
+              )}
+            </div>
+          )}
+        </>
+      )}
+
+      <ImagePreviewModal product={imagePreview} onClose={() => setImagePreview(null)} />
     </div>
   );
 }

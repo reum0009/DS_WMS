@@ -740,6 +740,7 @@ try {
   app.use('/api/system',             require('./routes/system'));
   app.use('/api/update',             require('./routes/update'));
   app.use('/api/compuzone', require('./routes/compuzone'));
+  app.use('/api/purchase-cart', require('./routes/purchaseCart'));
 } catch (err) {
   console.error('Route loading error:', err);
   process.exit(1);
