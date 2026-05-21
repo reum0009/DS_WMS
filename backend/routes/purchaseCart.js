@@ -479,12 +479,77 @@ function splitCartItems(items) {
   return { compuzone, manual, blocked };
 }
 
+function purchaseTextOfItem(item) {
+  const product = item?.product || {};
+  return [product.productName, product.specification, product.productCode]
+    .filter(Boolean)
+    .join(' ')
+    .toLowerCase();
+}
+
+function documentCategoryForItem(item) {
+  const text = purchaseTextOfItem(item);
+  const consumableMarkers = ['가방', '케이블', '젠더', '더미', '플러그', '마우스', '키보드', '동글', '허브'];
+  if (consumableMarkers.some(marker => text.includes(marker))) return '소모품';
+  if (text.includes('office') || text.includes('windows') || text.includes('소프트웨어') || text.includes('라이선스')) {
+    return '컴퓨터소프트웨어';
+  }
+  const fixtureMarkers = ['노트북', '아이디어패드', 'thinkpad', '갤럭시북', '그램', 'vivobook', 'zenbook', '데스크탑', '미니 pc', 'pc', '프린터', '복합기', '모니터'];
+  if (fixtureMarkers.some(marker => text.includes(marker))) return '집기비품';
+  return '소모품';
+}
+
+function documentLabelForItems(items) {
+  const categories = items.map(documentCategoryForItem);
+  if (categories.includes('집기비품')) return '집기비품';
+  if (categories.includes('컴퓨터소프트웨어')) return '컴퓨터소프트웨어';
+  return '소모품';
+}
+
+function purchaseFactory(body) {
+  const text = String(body.factory || body.deliveryFactory || body.title || body.memo || '').trim();
+  const match = text.match(/\b([DP][0-9])\s*공장\b/i);
+  if (match) return `${match[1].toUpperCase()}공장`;
+  const corp = String(body.corp || '').replace(/\s+/g, '');
+  return corp.includes('정밀') ? 'P3공장' : 'D1공장';
+}
+
+function purchaseTitle({ body, compuzoneItems }) {
+  const raw = String(body.title || '').trim();
+  if (raw) return raw;
+  return `전산 ${documentLabelForItems(compuzoneItems)} 구매 건(${purchaseFactory(body)})`;
+}
+
+function normalizeKeywords(value) {
+  if (Array.isArray(value)) return value.map(v => String(v || '').trim()).filter(Boolean);
+  return String(value || '')
+    .split(',')
+    .map(v => v.trim())
+    .filter(Boolean);
+}
+
+function purchaseMemo(body) {
+  const factory = purchaseFactory(body);
+  const deliveryName = String(body.deliveryName || '').trim();
+  const deliveryKeywords = normalizeKeywords(body.deliveryKeywords);
+  const businessNumber = String(body.businessNumber || '').trim();
+  const businessContactName = String(body.businessContactName || '').trim();
+  const userMemo = String(body.memo || '').trim();
+  const lines = [factory];
+  if (deliveryName) lines.push(`배송지=${deliveryName}`);
+  if (deliveryKeywords.length) lines.push(`배송키워드=${deliveryKeywords.join(',')}`);
+  if (businessNumber) lines.push(`사업자번호=${businessNumber}`);
+  if (businessContactName) lines.push(`사업자담당자=${businessContactName}`);
+  if (userMemo) lines.push(userMemo);
+  return lines.filter(Boolean).join('\n');
+}
+
 function purchaseAutoPayload({ body, compuzoneItems }) {
   return {
     corp: String(body.corp || '').trim(),
-    title: String(body.title || '').trim(),
+    title: purchaseTitle({ body, compuzoneItems }),
     requester: String(body.requester || '').trim(),
-    memo: String(body.memo || '').trim(),
+    memo: purchaseMemo(body),
     items: compuzoneItems.map((item) => ({
       url: item.product.source.productUrl,
       quantity: item.quantity,
@@ -492,9 +557,11 @@ function purchaseAutoPayload({ body, compuzoneItems }) {
   };
 }
 
-function validatePurchasePayload(payload) {
+function validatePurchasePayload(payload, body = {}) {
   if (!payload.corp) return '법인/회사 구분을 입력하세요.';
   if (!payload.title) return '품의 제목을 입력하세요.';
+  if (!String(body.deliveryName || '').trim()) return '배송지를 선택하세요.';
+  if (!String(body.businessNumber || '').trim()) return '사업자번호를 선택하세요.';
   if (!payload.requester) return '요청자를 입력하세요.';
   if (!payload.items.length) return '컴퓨존 자동구매 가능 상품이 없습니다.';
   return null;
@@ -696,7 +763,7 @@ router.post('/checkout', roleAuth(WRITE_ROLES), async (req, res) => {
     }
 
     const payload = purchaseAutoPayload({ body: req.body || {}, compuzoneItems: split.compuzone });
-    const validationError = validatePurchasePayload(payload);
+    const validationError = validatePurchasePayload(payload, req.body || {});
     if (validationError) return res.status(400).json({ error: validationError, split });
 
     const response = await fetch(`${PURCHASE_AUTO_API_BASE_URL}/api/purchase-jobs`, {

@@ -1722,6 +1722,51 @@ const sourceBadgeColor = (source) => {
 const productImageUrl = (product) => product?.source?.thumbnailUrl || product?.source?.imageUrl || '';
 const productLabel = (product) => [product?.productName, product?.specification].filter(Boolean).join(' / ');
 
+const PURCHASE_COMPANIES = [
+  { value: '대승', label: '대승', businessNumbers: ['125-81-05619', '403-85-07607', '403-85-23311'] },
+  { value: '대승정밀', label: '대승정밀', businessNumbers: ['125-81-32697', '403-85-15640', '844-85-00770', '118-85-07029'] },
+  { value: '일강', label: '일강', businessNumbers: ['125-81-51622', '403-85-20895'] },
+];
+
+const PURCHASE_DELIVERIES = [
+  {
+    key: 'gimje-it',
+    label: '김제 전산팀',
+    factory: 'P3공장',
+    defaultCorp: '대승정밀',
+    defaultBusinessNumber: '403-85-15640',
+    businessContactName: '윤기옥',
+    keywords: ['김제 전산팀', '지평선산단4길 89', '010-8025-2861'],
+  },
+  {
+    key: 'pyeongtaek-it',
+    label: '평택 전산팀',
+    factory: 'D1공장',
+    defaultCorp: '대승',
+    defaultBusinessNumber: '125-81-05619',
+    businessContactName: '윤기옥',
+    keywords: ['평택 전산팀', '수월암4길 200', '010-2227-0009'],
+  },
+];
+
+const purchaseCompany = (value) => PURCHASE_COMPANIES.find(c => c.value === value) || PURCHASE_COMPANIES[0];
+const purchaseDelivery = (key) => PURCHASE_DELIVERIES.find(d => d.key === key) || PURCHASE_DELIVERIES[0];
+
+const purchaseDocumentCategory = (product) => {
+  const text = [product?.productName, product?.specification, product?.productCode].filter(Boolean).join(' ').toLowerCase();
+  if (['가방', '케이블', '젠더', '더미', '플러그', '마우스', '키보드', '동글', '허브'].some(v => text.includes(v))) return '소모품';
+  if (text.includes('office') || text.includes('windows') || text.includes('소프트웨어') || text.includes('라이선스')) return '컴퓨터소프트웨어';
+  if (['노트북', '아이디어패드', 'thinkpad', '갤럭시북', '그램', 'vivobook', 'zenbook', '데스크탑', '미니 pc', 'pc', '프린터', '복합기', '모니터'].some(v => text.includes(v))) return '집기비품';
+  return '소모품';
+};
+
+const purchaseDocumentLabel = (items) => {
+  const categories = (items || []).map(item => purchaseDocumentCategory(item.product || item));
+  if (categories.includes('집기비품')) return '집기비품';
+  if (categories.includes('컴퓨터소프트웨어')) return '컴퓨터소프트웨어';
+  return '소모품';
+};
+
 function ProductThumb({ product, onOpen }) {
   const src = productImageUrl(product);
   return (
@@ -4088,8 +4133,9 @@ function PurchaseCartPanel({ showMsg, currentUser }) {
   const [imagePreview, setImagePreview] = useState(null);
   const [result, setResult] = useState(null);
   const [form, setForm] = useState({
-    corp: '',
-    title: '컴퓨존 구매 건',
+    corp: '대승정밀',
+    deliveryKey: 'gimje-it',
+    businessNumber: '403-85-15640',
     requester: currentUser?.name || '',
     memo: '',
     allowPartial: false,
@@ -4175,7 +4221,7 @@ function PurchaseCartPanel({ showMsg, currentUser }) {
     setSaving(true);
     setResult(null);
     try {
-      const res = await purchaseCartAPI.checkout(form);
+      const res = await purchaseCartAPI.checkout(checkoutPayload());
       setResult(res.data);
       showMsg('Purchase_Auto 구매 작업을 생성했습니다');
     } catch (e) {
@@ -4199,6 +4245,40 @@ function PurchaseCartPanel({ showMsg, currentUser }) {
     });
     return { compuzone, manual, blocked };
   }, [cart.items]);
+
+  const selectedCompany = useMemo(() => purchaseCompany(form.corp), [form.corp]);
+  const selectedDelivery = useMemo(() => purchaseDelivery(form.deliveryKey), [form.deliveryKey]);
+  const approvalTitle = useMemo(() => {
+    return `전산 ${purchaseDocumentLabel(split.compuzone)} 구매 건(${selectedDelivery.factory})`;
+  }, [split.compuzone, selectedDelivery.factory]);
+
+  const changeDelivery = (key) => {
+    const nextDelivery = purchaseDelivery(key);
+    setForm(f => ({
+      ...f,
+      deliveryKey: nextDelivery.key,
+      corp: nextDelivery.defaultCorp,
+      businessNumber: nextDelivery.defaultBusinessNumber,
+    }));
+  };
+
+  const changeCorp = (corp) => {
+    const company = purchaseCompany(corp);
+    setForm(f => ({
+      ...f,
+      corp: company.value,
+      businessNumber: company.businessNumbers.includes(f.businessNumber) ? f.businessNumber : company.businessNumbers[0],
+    }));
+  };
+
+  const checkoutPayload = () => ({
+    ...form,
+    title: approvalTitle,
+    factory: selectedDelivery.factory,
+    deliveryName: selectedDelivery.label,
+    deliveryKeywords: selectedDelivery.keywords,
+    businessContactName: selectedDelivery.businessContactName,
+  });
 
   return (
     <div>
@@ -4302,10 +4382,28 @@ function PurchaseCartPanel({ showMsg, currentUser }) {
               )}
 
               <Field label="법인/회사 *">
-                <input value={form.corp} onChange={e => setForm(f => ({ ...f, corp: e.target.value }))} style={inputStyle} placeholder="예: 대승정밀" />
+                <select value={form.corp} onChange={e => changeCorp(e.target.value)} style={inputStyle}>
+                  {PURCHASE_COMPANIES.map(company => (
+                    <option key={company.value} value={company.value}>{company.label}</option>
+                  ))}
+                </select>
+              </Field>
+              <Field label="배송지 *">
+                <select value={form.deliveryKey} onChange={e => changeDelivery(e.target.value)} style={inputStyle}>
+                  {PURCHASE_DELIVERIES.map(delivery => (
+                    <option key={delivery.key} value={delivery.key}>{delivery.label} / {delivery.factory}</option>
+                  ))}
+                </select>
+              </Field>
+              <Field label="사업자번호 *">
+                <select value={form.businessNumber} onChange={e => setForm(f => ({ ...f, businessNumber: e.target.value }))} style={inputStyle}>
+                  {selectedCompany.businessNumbers.map(number => (
+                    <option key={number} value={number}>{number}</option>
+                  ))}
+                </select>
               </Field>
               <Field label="품의 제목 *">
-                <input value={form.title} onChange={e => setForm(f => ({ ...f, title: e.target.value }))} style={inputStyle} />
+                <input value={approvalTitle} readOnly style={{ ...inputStyle, color: '#e6edf3', background: '#0d1117' }} />
               </Field>
               <Field label="요청자 *">
                 <input value={form.requester} onChange={e => setForm(f => ({ ...f, requester: e.target.value }))} style={inputStyle} />
