@@ -1924,6 +1924,7 @@ function CategoriesPanel({ showMsg, currentUser }) {
   const [moveModal,    setMoveModal]    = useState(null);
   const [purchaseModal, setPurchaseModal] = useState(null);
   const [imagePreview, setImagePreview] = useState(null);
+  const [allImageRefreshing, setAllImageRefreshing] = useState(false);
   const [bulkImageRefreshing, setBulkImageRefreshing] = useState(false);
   // 드래그 상태: { dragId, dragLevel, dragParentId, overId }
   const [dragState,    setDragState]    = useState(null);
@@ -2131,6 +2132,19 @@ function CategoriesPanel({ showMsg, currentUser }) {
     }
   };
 
+  const refreshAllPurchaseImages = async () => {
+    setAllImageRefreshing(true);
+    try {
+      const res = await purchaseCartAPI.refreshImages({ limit: 1000 });
+      const data = res.data || {};
+      showMsg(`컴퓨존 이미지 전체 갱신 완료: 성공 ${data.updated || 0}건, 실패 ${data.failed || 0}건`);
+    } catch (e) {
+      showMsg(e.response?.data?.error || '컴퓨존 이미지 전체 갱신 실패', 'error');
+    } finally {
+      setAllImageRefreshing(false);
+    }
+  };
+
   const addSelectedToCart = async () => {
     if (!purchaseModal) return;
     const selectedProducts = (purchaseModal.products || []).filter(p => purchaseModal.selected?.[p.id]);
@@ -2315,7 +2329,28 @@ function CategoriesPanel({ showMsg, currentUser }) {
     <div>
       <SectionHeader title="카테고리 관리"
         subtitle="5단계 계층: 부서(L1) › 분류(L2) › 대분류(L3) › 중분류(L4) › 소분류(L5)"
-        action={view === 'active' ? <AddBtn onClick={openAddDept} label="+ 부서 추가" /> : null} />
+        action={view === 'active' ? (
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+            <button
+              onClick={refreshAllPurchaseImages}
+              disabled={allImageRefreshing}
+              style={{
+                background: '#1f6feb',
+                border: '1px solid #58a6ff',
+                color: '#fff',
+                padding: '8px 14px',
+                borderRadius: 6,
+                cursor: allImageRefreshing ? 'not-allowed' : 'pointer',
+                opacity: allImageRefreshing ? 0.65 : 1,
+                fontSize: 13,
+                fontWeight: 700,
+              }}
+            >
+              {allImageRefreshing ? '전체 갱신 중...' : '컴퓨존 이미지 전체 갱신'}
+            </button>
+            <AddBtn onClick={openAddDept} label="+ 부서 추가" />
+          </div>
+        ) : null} />
 
       {/* ── 활성 / 비활성 탭 ── */}
       <div style={{ display: 'flex', gap: 0, marginBottom: 16, borderBottom: '1px solid #21262d' }}>
@@ -2531,7 +2566,7 @@ function CategoriesPanel({ showMsg, currentUser }) {
                       fontWeight: 700,
                     }}
                   >
-                    {bulkImageRefreshing ? '이미지 갱신 중...' : '이미지 전체 갱신'}
+                    {bulkImageRefreshing ? '이미지 갱신 중...' : '현재 목록 이미지 갱신'}
                   </button>
                   <Badge color="blue">{purchaseModal.products.length}개 품목</Badge>
                 </div>
