@@ -1723,9 +1723,33 @@ const productImageUrl = (product) => product?.source?.thumbnailUrl || product?.s
 const productLabel = (product) => [product?.productName, product?.specification].filter(Boolean).join(' / ');
 
 const PURCHASE_COMPANIES = [
-  { value: '대승', label: '대승', businessNumbers: ['125-81-05619', '403-85-07607', '403-85-23311'] },
-  { value: '대승정밀', label: '대승정밀', businessNumbers: ['125-81-32697', '403-85-15640', '844-85-00770', '118-85-07029'] },
-  { value: '일강', label: '일강', businessNumbers: ['125-81-51622', '403-85-20895'] },
+  {
+    value: '대승',
+    label: '대승',
+    businessNumbers: [
+      { label: 'D1공장', value: '125-81-05619' },
+      { label: 'D2공장', value: '403-85-07607' },
+      { label: 'D3공장', value: '403-85-23311' },
+    ],
+  },
+  {
+    value: '대승정밀',
+    label: '대승정밀',
+    businessNumbers: [
+      { label: 'P1공장', value: '125-81-32697' },
+      { label: 'P3공장', value: '403-85-15640' },
+      { label: 'P4공장', value: '844-85-00770' },
+      { label: 'P2공장', value: '118-85-07029' },
+    ],
+  },
+  {
+    value: '일강',
+    label: '일강',
+    businessNumbers: [
+      { label: '일강 1공장', value: '125-81-51622' },
+      { label: '일강 2공장', value: '403-85-20895' },
+    ],
+  },
 ];
 
 const PURCHASE_DELIVERIES = [
@@ -4267,7 +4291,9 @@ function PurchaseCartPanel({ showMsg, currentUser }) {
     setForm(f => ({
       ...f,
       corp: company.value,
-      businessNumber: company.businessNumbers.includes(f.businessNumber) ? f.businessNumber : company.businessNumbers[0],
+      businessNumber: company.businessNumbers.some(item => item.value === f.businessNumber)
+        ? f.businessNumber
+        : company.businessNumbers[0]?.value || '',
     }));
   };
 
@@ -4395,10 +4421,10 @@ function PurchaseCartPanel({ showMsg, currentUser }) {
                   ))}
                 </select>
               </Field>
-              <Field label="사업자번호 *">
+              <Field label="사업장 *">
                 <select value={form.businessNumber} onChange={e => setForm(f => ({ ...f, businessNumber: e.target.value }))} style={inputStyle}>
-                  {selectedCompany.businessNumbers.map(number => (
-                    <option key={number} value={number}>{number}</option>
+                  {selectedCompany.businessNumbers.map(item => (
+                    <option key={item.value} value={item.value}>{item.label}</option>
                   ))}
                 </select>
               </Field>
