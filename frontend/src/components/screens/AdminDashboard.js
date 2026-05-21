@@ -4160,6 +4160,7 @@ function PurchaseCartPanel({ showMsg, currentUser }) {
     corp: '대승정밀',
     deliveryKey: 'gimje-it',
     businessNumber: '403-85-15640',
+    purchaseAutoUrl: 'http://127.0.0.1:5008',
     requester: currentUser?.name || '',
     memo: '',
     allowPartial: false,
@@ -4242,16 +4243,41 @@ function PurchaseCartPanel({ showMsg, currentUser }) {
   };
 
   const checkout = async () => {
+    if ((split.manual.length || split.blocked.length) && !form.allowPartial) {
+      const message = '컴퓨존 자동구매가 안 되는 항목이 포함되어 있습니다. 컴퓨존 상품만 먼저 생성하려면 옵션을 켜세요.';
+      setResult({ error: message });
+      showMsg(message, 'error');
+      return;
+    }
+
     setSaving(true);
     setResult(null);
+    const baseUrl = String(form.purchaseAutoUrl || '').trim().replace(/\/+$/, '');
+    const payload = purchaseAutoPayload();
     try {
-      const res = await purchaseCartAPI.checkout(checkoutPayload());
-      setResult(res.data);
+      if (!baseUrl) throw new Error('Purchase_Auto 주소를 입력하세요.');
+      const response = await fetch(`${baseUrl}/api/purchase-jobs`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        throw new Error(data?.detail || data?.error || `Purchase_Auto 응답 오류: HTTP ${response.status}`);
+      }
+      setResult({
+        purchaseJob: data,
+        sentTo: baseUrl,
+        payload,
+        split,
+      });
       showMsg('Purchase_Auto 구매 작업을 생성했습니다');
     } catch (e) {
-      const data = e.response?.data;
-      setResult(data || null);
-      showMsg(data?.error || '구매 작업 생성 실패', 'error');
+      const message = e?.message === 'Failed to fetch'
+        ? `Purchase_Auto API 연결 실패: ${baseUrl} 에서 python -m purchase_auto 실행 여부를 확인하세요.`
+        : e?.message || '구매 작업 생성 실패';
+      setResult({ error: message, sentTo: baseUrl, payload });
+      showMsg(message, 'error');
     } finally {
       setSaving(false);
     }
@@ -4297,14 +4323,27 @@ function PurchaseCartPanel({ showMsg, currentUser }) {
     }));
   };
 
-  const checkoutPayload = () => ({
-    ...form,
-    title: approvalTitle,
-    factory: selectedDelivery.factory,
-    deliveryName: selectedDelivery.label,
-    deliveryKeywords: selectedDelivery.keywords,
-    businessContactName: selectedDelivery.businessContactName,
-  });
+  const purchaseAutoPayload = () => {
+    const metaLines = [
+      selectedDelivery.factory,
+      `배송지=${selectedDelivery.label}`,
+      `배송키워드=${selectedDelivery.keywords.join(',')}`,
+      `사업자번호=${form.businessNumber}`,
+      `사업자담당자=${selectedDelivery.businessContactName}`,
+      form.memo,
+    ].filter(Boolean);
+
+    return {
+      corp: form.corp,
+      title: approvalTitle,
+      requester: form.requester,
+      memo: metaLines.join('\n'),
+      items: split.compuzone.map(item => ({
+        url: item.product?.source?.productUrl,
+        quantity: item.quantity,
+      })),
+    };
+  };
 
   return (
     <div>
@@ -4430,6 +4469,9 @@ function PurchaseCartPanel({ showMsg, currentUser }) {
               </Field>
               <Field label="품의 제목 *">
                 <input value={approvalTitle} readOnly style={{ ...inputStyle, color: '#e6edf3', background: '#0d1117' }} />
+              </Field>
+              <Field label="Purchase_Auto 주소 *">
+                <input value={form.purchaseAutoUrl} onChange={e => setForm(f => ({ ...f, purchaseAutoUrl: e.target.value }))} style={inputStyle} />
               </Field>
               <Field label="요청자 *">
                 <input value={form.requester} onChange={e => setForm(f => ({ ...f, requester: e.target.value }))} style={inputStyle} />
