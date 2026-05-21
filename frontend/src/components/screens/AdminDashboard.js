@@ -1924,6 +1924,7 @@ function CategoriesPanel({ showMsg, currentUser }) {
   const [moveModal,    setMoveModal]    = useState(null);
   const [purchaseModal, setPurchaseModal] = useState(null);
   const [imagePreview, setImagePreview] = useState(null);
+  const [bulkImageRefreshing, setBulkImageRefreshing] = useState(false);
   // 드래그 상태: { dragId, dragLevel, dragParentId, overId }
   const [dragState,    setDragState]    = useState(null);
   // 접힌 노드 ID Set — 없으면 기본 펼침
@@ -2103,6 +2104,30 @@ function CategoriesPanel({ showMsg, currentUser }) {
       showMsg('이미지 갱신 완료');
     } catch (e) {
       showMsg(e.response?.data?.error || '이미지 갱신 실패', 'error');
+    }
+  };
+
+  const refreshPurchaseImages = async () => {
+    if (!purchaseModal?.products?.length) return;
+    const sourceIds = purchaseModal.products
+      .map(p => p.source?.id)
+      .filter(Boolean);
+    if (sourceIds.length === 0) return showMsg('갱신할 컴퓨존 상품 URL이 없습니다', 'error');
+
+    setBulkImageRefreshing(true);
+    try {
+      const res = await purchaseCartAPI.refreshImages({
+        sourceIds,
+        limit: sourceIds.length,
+      });
+      const catalog = await purchaseCartAPI.getCatalog({ categoryId: purchaseModal.node.id, includeDescendants: 1 });
+      setPurchaseModal(m => m ? ({ ...m, products: catalog.data?.products || [] }) : m);
+      const data = res.data || {};
+      showMsg(`이미지 전체 갱신 완료: 성공 ${data.updated || 0}건, 실패 ${data.failed || 0}건`);
+    } catch (e) {
+      showMsg(e.response?.data?.error || '이미지 전체 갱신 실패', 'error');
+    } finally {
+      setBulkImageRefreshing(false);
     }
   };
 
@@ -2490,7 +2515,26 @@ function CategoriesPanel({ showMsg, currentUser }) {
                     ? '수량을 정해서 장바구니에 담습니다.'
                     : '여러 품목 중 구매할 항목과 수량을 선택하세요.'}
                 </div>
-                <Badge color="blue">{purchaseModal.products.length}개 품목</Badge>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <button
+                    onClick={refreshPurchaseImages}
+                    disabled={bulkImageRefreshing}
+                    style={{
+                      background: '#1f6feb',
+                      border: '1px solid #58a6ff',
+                      color: '#fff',
+                      padding: '6px 10px',
+                      borderRadius: 6,
+                      cursor: bulkImageRefreshing ? 'not-allowed' : 'pointer',
+                      opacity: bulkImageRefreshing ? 0.65 : 1,
+                      fontSize: 12,
+                      fontWeight: 700,
+                    }}
+                  >
+                    {bulkImageRefreshing ? '이미지 갱신 중...' : '이미지 전체 갱신'}
+                  </button>
+                  <Badge color="blue">{purchaseModal.products.length}개 품목</Badge>
+                </div>
               </div>
 
               <div style={{ display: 'flex', flexDirection: 'column', gap: 8, maxHeight: '58vh', overflowY: 'auto', paddingRight: 4 }}>
@@ -4005,6 +4049,7 @@ function PurchaseCartPanel({ showMsg, currentUser }) {
   const [cart, setCart] = useState({ items: [], totalQuantity: 0, totalAmount: 0 });
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [imageRefreshing, setImageRefreshing] = useState(false);
   const [imagePreview, setImagePreview] = useState(null);
   const [result, setResult] = useState(null);
   const [form, setForm] = useState({
@@ -4069,6 +4114,28 @@ function PurchaseCartPanel({ showMsg, currentUser }) {
     }
   };
 
+  const refreshCartImages = async () => {
+    const sourceIds = (cart.items || [])
+      .map(item => item.product?.source?.id)
+      .filter(Boolean);
+    if (sourceIds.length === 0) return showMsg('갱신할 컴퓨존 상품 URL이 없습니다', 'error');
+
+    setImageRefreshing(true);
+    try {
+      const res = await purchaseCartAPI.refreshImages({
+        sourceIds,
+        limit: sourceIds.length,
+      });
+      await load();
+      const data = res.data || {};
+      showMsg(`이미지 전체 갱신 완료: 성공 ${data.updated || 0}건, 실패 ${data.failed || 0}건`);
+    } catch (e) {
+      showMsg(e.response?.data?.error || '이미지 전체 갱신 실패', 'error');
+    } finally {
+      setImageRefreshing(false);
+    }
+  };
+
   const checkout = async () => {
     setSaving(true);
     setResult(null);
@@ -4103,10 +4170,19 @@ function PurchaseCartPanel({ showMsg, currentUser }) {
       <SectionHeader
         title="장바구니"
         subtitle="카테고리에서 담은 품목을 컴퓨존 구매 작업으로 넘깁니다"
-        action={cart.items?.length ? <button onClick={clearCart} style={{
-          background: 'none', border: '1px solid #3a1a1a', color: '#f85149',
-          padding: '8px 14px', borderRadius: 6, cursor: 'pointer', fontSize: 13,
-        }}>비우기</button> : null}
+        action={cart.items?.length ? (
+          <div style={{ display: 'flex', gap: 8 }}>
+            <button onClick={refreshCartImages} disabled={imageRefreshing} style={{
+              background: '#1f6feb', border: '1px solid #58a6ff', color: '#fff',
+              padding: '8px 14px', borderRadius: 6, cursor: imageRefreshing ? 'not-allowed' : 'pointer',
+              opacity: imageRefreshing ? 0.65 : 1, fontSize: 13,
+            }}>{imageRefreshing ? '이미지 갱신 중...' : '이미지 전체 갱신'}</button>
+            <button onClick={clearCart} style={{
+              background: 'none', border: '1px solid #3a1a1a', color: '#f85149',
+              padding: '8px 14px', borderRadius: 6, cursor: 'pointer', fontSize: 13,
+            }}>비우기</button>
+          </div>
+        ) : null}
       />
 
       {loading ? (

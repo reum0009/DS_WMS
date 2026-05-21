@@ -15,6 +15,20 @@ function parsePositiveInt(value, fallback = null) {
   return Number.isInteger(n) && n > 0 ? n : fallback;
 }
 
+function parseIdList(value, max = 1000) {
+  const raw = Array.isArray(value) ? value : String(value || '').split(',');
+  const ids = [];
+  const seen = new Set();
+  for (const item of raw) {
+    const id = parsePositiveInt(item);
+    if (!id || seen.has(id)) continue;
+    seen.add(id);
+    ids.push(id);
+    if (ids.length >= max) break;
+  }
+  return ids;
+}
+
 function compuzoneUrl(productNo) {
   const no = String(productNo || '').trim();
   return no ? `${COMPUZONE_PRODUCT_BASE_URL}${encodeURIComponent(no)}` : null;
@@ -328,6 +342,66 @@ async function findPrimarySourceId(productId, sourceId = null) {
     { replacements: { productId }, type: QueryTypes.SELECT }
   );
   return rows[0]?.id || null;
+}
+
+async function refreshPurchaseSourceImage(source) {
+  if (!source?.sourceId || !source?.productUrl) {
+    throw new Error('상품 URL이 없습니다.');
+  }
+
+  const imageUrl = await resolveCompuzoneImage(source.productUrl);
+  await global.sequelize.query(
+    `
+    UPDATE purchase_product_sources
+    SET imageUrl = :imageUrl,
+        thumbnailUrl = :imageUrl,
+        imageUpdatedAt = NOW(),
+        updatedAt = NOW()
+    WHERE id = :sourceId
+    `,
+    { replacements: { sourceId: source.sourceId, imageUrl } }
+  );
+
+  return imageUrl;
+}
+
+async function loadSourcesForImageRefresh({ sourceIds = [], productIds = [], categoryIds = [], missingOnly = false, limit = 200 }) {
+  const replacements = {
+    sourceIds,
+    productIds,
+    categoryIds,
+    limit: Math.max(1, Math.min(parsePositiveInt(limit, 200), 1000)),
+  };
+  const where = [
+    'p.isActive = 1',
+    "s.sourceType = 'compuzone'",
+    's.productUrl IS NOT NULL',
+    "s.productUrl <> ''",
+  ];
+
+  if (sourceIds.length) where.push('s.id IN (:sourceIds)');
+  else if (productIds.length) where.push('s.productId IN (:productIds)');
+  else if (categoryIds.length) where.push('p.categoryId IN (:categoryIds)');
+
+  if (missingOnly) {
+    where.push("(s.imageUrl IS NULL OR s.imageUrl = '' OR s.thumbnailUrl IS NULL OR s.thumbnailUrl = '')");
+  }
+
+  return global.sequelize.query(
+    `
+    SELECT
+      s.id AS sourceId,
+      s.productId,
+      s.productUrl,
+      p.productName
+    FROM purchase_product_sources s
+    JOIN products p ON p.id = s.productId
+    WHERE ${where.join(' AND ')}
+    ORDER BY p.productName ASC, s.isPrimary DESC, s.id ASC
+    LIMIT :limit
+    `,
+    { replacements, type: QueryTypes.SELECT }
+  );
 }
 
 async function loadCart(userId) {
@@ -650,6 +724,59 @@ router.post('/checkout', roleAuth(WRITE_ROLES), async (req, res) => {
   }
 });
 
+router.post('/images/refresh', roleAuth(WRITE_ROLES), async (req, res) => {
+  try {
+    await ensureSchema();
+    const body = req.body || {};
+    const sourceIds = parseIdList(body.sourceIds);
+    const productIds = parseIdList(body.productIds);
+    const includeDescendants = String(body.includeDescendants ?? '1') !== '0';
+    const categoryIds = body.categoryId ? await categoryIdsFor(body.categoryId, includeDescendants) : [];
+    const missingOnly = body.missingOnly === true || ['1', 'true', 'Y', 'y'].includes(String(body.missingOnly || ''));
+
+    const sources = await loadSourcesForImageRefresh({
+      sourceIds,
+      productIds,
+      categoryIds,
+      missingOnly,
+      limit: body.limit || 200,
+    });
+
+    const results = [];
+    for (const source of sources) {
+      try {
+        const imageUrl = await refreshPurchaseSourceImage(source);
+        results.push({
+          sourceId: source.sourceId,
+          productId: source.productId,
+          productName: source.productName,
+          imageUrl,
+          ok: true,
+        });
+      } catch (err) {
+        results.push({
+          sourceId: source.sourceId,
+          productId: source.productId,
+          productName: source.productName,
+          ok: false,
+          error: err.message,
+        });
+      }
+    }
+
+    const updated = results.filter(r => r.ok).length;
+    res.json({
+      total: sources.length,
+      updated,
+      failed: results.length - updated,
+      missingOnly,
+      results,
+    });
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
 router.post('/products/:productId/refresh-image', roleAuth(WRITE_ROLES), async (req, res) => {
   try {
     await ensureSchema();
@@ -672,18 +799,11 @@ router.post('/products/:productId/refresh-image', roleAuth(WRITE_ROLES), async (
     const source = rows[0];
     if (!source?.productUrl) return res.status(400).json({ error: '상품 URL이 없습니다.' });
 
-    const imageUrl = await resolveCompuzoneImage(source.productUrl);
-    await global.sequelize.query(
-      `
-      UPDATE purchase_product_sources
-      SET imageUrl = :imageUrl,
-          thumbnailUrl = :imageUrl,
-          imageUpdatedAt = NOW(),
-          updatedAt = NOW()
-      WHERE id = :sourceId
-      `,
-      { replacements: { sourceId, imageUrl } }
-    );
+    const imageUrl = await refreshPurchaseSourceImage({
+      sourceId: source.id,
+      productId,
+      productUrl: source.productUrl,
+    });
 
     res.json({ productId, sourceId, imageUrl });
   } catch (err) {

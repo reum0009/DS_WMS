@@ -349,6 +349,7 @@ const purchaseCartAPI = {
   clear: () => axios.delete(`${API_BASE_URL}/purchase-cart`, { headers: getAuthHeader() }),
   preview: (data = {}) => axios.post(`${API_BASE_URL}/purchase-cart/preview`, data, { headers: getAuthHeader() }),
   checkout: (data) => axios.post(`${API_BASE_URL}/purchase-cart/checkout`, data, { headers: getAuthHeader() }),
+  refreshImages: (data = {}) => axios.post(`${API_BASE_URL}/purchase-cart/images/refresh`, data, { headers: getAuthHeader() }),
   refreshImage: (productId, data = {}) => axios.post(`${API_BASE_URL}/purchase-cart/products/${productId}/refresh-image`, data, { headers: getAuthHeader() }),
 };
 
