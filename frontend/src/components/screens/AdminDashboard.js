@@ -4157,11 +4157,17 @@ function PurchaseCartPanel({ showMsg, currentUser }) {
   const [imageRefreshing, setImageRefreshing] = useState(false);
   const [imagePreview, setImagePreview] = useState(null);
   const [result, setResult] = useState(null);
+  const [purchaseModalOpen, setPurchaseModalOpen] = useState(false);
+  const [workflowLog, setWorkflowLog] = useState([]);
+  const [automationForm, setAutomationForm] = useState({
+    compuzoneAccount: 'ds1500',
+    groupwareLoginId: '',
+    groupwareLoginPassword: '',
+  });
   const [form, setForm] = useState({
     corp: '대승정밀',
     deliveryKey: 'gimje-it',
     businessNumber: '403-85-15640',
-    purchaseAutoUrl: 'http://127.0.0.1:5008',
     requester: currentUser?.name || '',
     memo: '',
     allowPartial: false,
@@ -4243,50 +4249,60 @@ function PurchaseCartPanel({ showMsg, currentUser }) {
     }
   };
 
-  const checkout = async () => {
+  const appendWorkflowLog = (message, level = 'info') => {
+    const at = new Date().toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+    setWorkflowLog(current => [...current, { at, message, level }].slice(-8));
+  };
+
+  const openPurchaseWorkflow = () => {
+    setPurchaseModalOpen(true);
+    setWorkflowLog([]);
+    if (!automationForm.groupwareLoginId && currentUser?.username) {
+      setAutomationForm(f => ({ ...f, groupwareLoginId: currentUser.username }));
+    }
+  };
+
+  const purchaseCheckoutPayload = () => ({
+    corp: form.corp,
+    deliveryName: selectedDelivery.label,
+    deliveryKeywords: selectedDelivery.keywords,
+    businessNumber: form.businessNumber,
+    businessContactName: selectedDelivery.businessContactName,
+    requester: form.requester,
+    memo: form.memo,
+    allowPartial: form.allowPartial,
+  });
+
+  const createPurchaseJob = async () => {
     if ((split.manual.length || split.blocked.length) && !form.allowPartial) {
       const message = '컴퓨존 자동구매가 안 되는 항목이 포함되어 있습니다. 컴퓨존 상품만 먼저 요청하려면 옵션을 켜세요.';
       setResult({ error: message });
+      appendWorkflowLog(message, 'error');
       showMsg(message, 'error');
-      return;
+      throw new Error(message);
     }
 
     setSaving(true);
     setResult(null);
-    const baseUrl = String(form.purchaseAutoUrl || '').trim().replace(/\/+$/, '');
-    const payload = purchaseAutoPayload();
+    appendWorkflowLog('구매 요청 생성 중');
     try {
-      if (!baseUrl) throw new Error('Purchase_Auto 주소를 입력하세요.');
-      const response = await fetch(`${baseUrl}/api/purchase-jobs`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload),
-      });
-      const data = await response.json().catch(() => ({}));
-      if (!response.ok) {
-        throw new Error(data?.detail || data?.error || `Purchase_Auto 응답 오류: HTTP ${response.status}`);
-      }
-      let purchaseAutoHealth = null;
-      try {
-        const healthResponse = await fetch(`${baseUrl}/health`);
-        if (healthResponse.ok) purchaseAutoHealth = await healthResponse.json();
-      } catch (_) {
-        purchaseAutoHealth = null;
-      }
+      const res = await purchaseCartAPI.checkout(purchaseCheckoutPayload());
+      const data = res.data || {};
       setResult({
-        purchaseJob: data,
-        sentTo: baseUrl,
-        payload,
-        split,
-        purchaseAutoHealth,
+        purchaseJob: data.purchaseJob,
+        payload: data.payload,
+        split: data.split || split,
+        purchaseAutoHealth: data.purchaseAutoHealth || null,
       });
+      appendWorkflowLog('구매 요청 생성 완료', 'success');
       showMsg('구매 요청을 생성했습니다');
+      return data.purchaseJob?.job || data.purchaseJob;
     } catch (e) {
-      const message = e?.message === 'Failed to fetch'
-        ? `Purchase_Auto API 연결 실패: ${baseUrl} 에서 python -m purchase_auto 실행 여부를 확인하세요.`
-        : e?.message || '구매 작업 생성 실패';
-      setResult({ error: message, sentTo: baseUrl, payload });
+      const message = e.response?.data?.error || e.message || '구매 요청 생성 실패';
+      setResult({ error: message });
+      appendWorkflowLog(message, 'error');
       showMsg(message, 'error');
+      throw e;
     } finally {
       setSaving(false);
     }
@@ -4332,86 +4348,76 @@ function PurchaseCartPanel({ showMsg, currentUser }) {
     }));
   };
 
-  const purchaseAutoPayload = () => {
-    const metaLines = [
-      selectedDelivery.factory,
-      `배송지=${selectedDelivery.label}`,
-      `배송키워드=${selectedDelivery.keywords.join(',')}`,
-      `사업자번호=${form.businessNumber}`,
-      `사업자담당자=${selectedDelivery.businessContactName}`,
-      form.memo,
-    ].filter(Boolean);
-
-    return {
-      corp: form.corp,
-      title: approvalTitle,
-      requester: form.requester,
-      memo: metaLines.join('\n'),
-      items: split.compuzone.map(item => ({
-        url: item.product?.source?.productUrl,
-        quantity: item.quantity,
-      })),
-    };
-  };
-
   const purchaseJob = result?.purchaseJob?.job || result?.purchaseJob || null;
   const purchaseJobId = purchaseJob?.job_id;
   const isPurchaseAutoDryRun = result?.purchaseAutoHealth?.dry_run === true;
-  const canRunPurchaseAutoStep = Boolean(purchaseJobId && !isPurchaseAutoDryRun);
-  const canSubmitApproval = Boolean(purchaseJob?.order_no && purchaseJob?.quote_pdf_path && !isPurchaseAutoDryRun);
-  const canMarkInvoice = !isPurchaseAutoDryRun && ['approval_submitted', 'waiting_tax_invoice', 'tax_invoice_received'].includes(purchaseJob?.status);
 
   const runPurchaseAutoStep = async (step, label) => {
-    const baseUrl = String(result?.sentTo || form.purchaseAutoUrl || '').trim().replace(/\/+$/, '');
-    if (!purchaseJobId || !baseUrl) {
-      showMsg('구매 작업 정보가 없습니다', 'error');
+    let activeJob = purchaseJob;
+    if (step === 'run-compuzone-order' && !activeJob?.job_id) {
+      try {
+        activeJob = await createPurchaseJob();
+      } catch (_) {
+        return;
+      }
+    }
+
+    const activeJobId = activeJob?.job_id || purchaseJobId;
+    if (!activeJobId) {
+      const message = '먼저 컴퓨존 주문/견적 실행으로 구매 요청을 생성하세요.';
+      appendWorkflowLog(message, 'error');
+      showMsg(message, 'error');
       return;
+    }
+    if (step === 'submit-approval') {
+      if (!purchaseJob?.order_no || !purchaseJob?.quote_pdf_path) {
+        const message = '먼저 컴퓨존 주문/견적 실행을 완료하세요.';
+        appendWorkflowLog(message, 'error');
+        showMsg(message, 'error');
+        return;
+      }
+      if (!automationForm.groupwareLoginId.trim() || !automationForm.groupwareLoginPassword.trim()) {
+        const message = '그룹웨어 계정과 비밀번호를 입력하세요.';
+        appendWorkflowLog(message, 'error');
+        showMsg(message, 'error');
+        return;
+      }
     }
 
     setRunningStep(step);
+    appendWorkflowLog(`${label} 시작`);
     try {
-      let health = result?.purchaseAutoHealth || null;
-      try {
-        const healthResponse = await fetch(`${baseUrl}/health`);
-        if (healthResponse.ok) health = await healthResponse.json();
-      } catch (_) {
-        health = result?.purchaseAutoHealth || null;
-      }
-      if (health?.dry_run === true) {
-        setResult(current => ({ ...current, purchaseAutoHealth: health }));
-        throw new Error('현재 테스트모드라 실제 주문/품의 실행을 막았습니다. Purchase_Auto 서버에서 PURCHASE_AUTO_DRY_RUN=0으로 바꾼 뒤 다시 시도하세요.');
-      }
-      const response = await fetch(`${baseUrl}/api/purchase-jobs/${purchaseJobId}/${step}`, {
-        method: 'POST',
-      });
-      const data = await response.json().catch(() => ({}));
-      if (!response.ok) {
-        throw new Error(data?.detail || data?.error || `${label} 실패: HTTP ${response.status}`);
-      }
-
+      const response = step === 'run-compuzone-order'
+        ? await purchaseCartAPI.runCompuzoneOrder(activeJobId, { compuzoneAccount: automationForm.compuzoneAccount })
+        : await purchaseCartAPI.submitApproval(activeJobId, {
+            groupwareLoginId: automationForm.groupwareLoginId,
+            groupwareLoginPassword: automationForm.groupwareLoginPassword,
+          });
+      const data = response.data || {};
       const nextJob = data?.job || data;
       setResult(current => ({
-        ...current,
+        ...(current || {}),
         purchaseJob: nextJob,
+        purchaseAutoHealth: data.purchaseAutoHealth || current?.purchaseAutoHealth || null,
         lastStep: {
           step,
           label,
           message: data?.message || `${label} 완료`,
         },
       }));
+      appendWorkflowLog(data?.message || `${label} 완료`, 'success');
       showMsg(data?.message || `${label} 완료`);
     } catch (e) {
-      const message = e?.message === 'Failed to fetch'
-        ? `Purchase_Auto API 연결 실패: ${baseUrl}`
-        : e?.message || `${label} 실패`;
+      const message = e.response?.data?.error || e?.message || `${label} 실패`;
       setResult(current => ({
-        ...current,
+        ...(current || {}),
         lastStep: {
           step,
           label,
           error: message,
         },
       }));
+      appendWorkflowLog(message, 'error');
       showMsg(message, 'error');
     } finally {
       setRunningStep('');
@@ -4419,87 +4425,64 @@ function PurchaseCartPanel({ showMsg, currentUser }) {
   };
 
   const renderPurchaseActionPanel = () => {
-    if (!result) return null;
-
-    const actionButtonStyle = (enabled, activeBg, activeBorder) => ({
-      background: enabled ? activeBg : '#30363d',
-      border: `1px solid ${enabled ? activeBorder : '#444c56'}`,
-      color: '#fff',
-      padding: '9px 12px',
-      borderRadius: 6,
-      cursor: enabled ? 'pointer' : 'not-allowed',
-      fontSize: 13,
-      fontWeight: 800,
-      minHeight: 38,
-    });
-
-    const orderEnabled = !runningStep && canRunPurchaseAutoStep;
-    const approvalEnabled = !runningStep && canSubmitApproval;
-    const invoiceEnabled = !runningStep && canMarkInvoice;
+    if (!result && workflowLog.length === 0) return null;
 
     return (
       <div style={{
-        marginTop: 16,
-        background: result.error ? '#3a1a1a' : '#161b22',
-        border: `1px solid ${result.error ? '#f85149' : '#30363d'}`,
+        marginTop: 14,
+        background: result?.error ? '#3a1a1a' : '#0d1117',
+        border: `1px solid ${result?.error ? '#f85149' : '#30363d'}`,
         borderRadius: 8,
-        padding: 16,
-        color: result.error ? '#f85149' : '#c9d1d9',
+        padding: 14,
+        color: result?.error ? '#f85149' : '#c9d1d9',
         fontSize: 13,
       }}>
-        {result.error ? (
-          <div>{result.error}</div>
-        ) : (
-          <div>
-            <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'flex-start', flexWrap: 'wrap', marginBottom: 12 }}>
-              <div>
-                <div style={{ color: isPurchaseAutoDryRun ? '#e3b341' : '#3fb950', fontWeight: 900, fontSize: 15 }}>
-                  {isPurchaseAutoDryRun ? '테스트모드 구매 요청 생성 완료' : '구매 요청 생성 완료'}
-                </div>
-                {purchaseJobId && <div style={{ marginTop: 4, color: '#8b949e', fontFamily: 'monospace', fontSize: 12 }}>{purchaseJobId}</div>}
-              </div>
-              <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
-                {purchaseJob?.status && <Badge color="green">상태 {purchaseJob.status}</Badge>}
-                {purchaseJob?.order_no && <Badge color="blue">주문번호 {purchaseJob.order_no}</Badge>}
-                {isPurchaseAutoDryRun && <Badge color="yellow">테스트모드</Badge>}
-              </div>
-            </div>
+        <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'flex-start', flexWrap: 'wrap', marginBottom: 10 }}>
+          <div style={{ color: '#e6edf3', fontWeight: 900 }}>진행 상태</div>
+          <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+            {purchaseJob?.status && <Badge color="green">상태 {purchaseJob.status}</Badge>}
+            {purchaseJob?.order_no && <Badge color="blue">주문번호 {purchaseJob.order_no}</Badge>}
+            {isPurchaseAutoDryRun && <Badge color="yellow">테스트모드</Badge>}
+          </div>
+        </div>
 
-            {isPurchaseAutoDryRun ? (
-              <div style={{ background: '#3a2e00', border: '1px solid #9e6a03', color: '#e3b341', borderRadius: 6, padding: 10, lineHeight: 1.5 }}>
-                현재 구매 자동화 서버가 테스트모드라 실제 컴퓨존 주문과 그룹웨어 품의는 실행하지 않습니다. 실사용 전 서버에서 PURCHASE_AUTO_DRY_RUN=0으로 바꿔야 합니다.
-              </div>
-            ) : (
-              <>
-                {purchaseJob?.approval_document_url && (
-                  <a href={purchaseJob.approval_document_url} target="_blank" rel="noreferrer" style={{ display: 'inline-block', color: '#58a6ff', marginBottom: 12 }}>품의 문서 열기</a>
-                )}
-                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 8 }}>
-                  <button onClick={() => runPurchaseAutoStep('run-compuzone-order', '컴퓨존 주문/견적 실행')} disabled={!orderEnabled} style={actionButtonStyle(orderEnabled, '#1f6feb', '#58a6ff')}>
-                    {runningStep === 'run-compuzone-order' ? '주문 실행 중...' : '컴퓨존 주문/견적 실행'}
-                  </button>
-                  <button onClick={() => runPurchaseAutoStep('submit-approval', '그룹웨어 품의 상신')} disabled={!approvalEnabled} style={actionButtonStyle(approvalEnabled, '#238636', '#2ea043')}>
-                    {runningStep === 'submit-approval' ? '품의 상신 중...' : '그룹웨어 품의 상신'}
-                  </button>
-                  <button onClick={() => runPurchaseAutoStep('mark-tax-invoice-received', '세금계산서 수신 처리')} disabled={!invoiceEnabled} style={actionButtonStyle(invoiceEnabled, '#8957e5', '#a371f7')}>
-                    {runningStep === 'mark-tax-invoice-received' ? '처리 중...' : '세금계산서 수신 처리'}
-                  </button>
-                </div>
-              </>
-            )}
-
-            {result.lastStep && (
-              <div style={{
-                marginTop: 10,
-                color: result.lastStep.error ? '#f85149' : '#c9d1d9',
-                background: result.lastStep.error ? '#3a1a1a' : '#0d1117',
-                border: `1px solid ${result.lastStep.error ? '#f85149' : '#30363d'}`,
+        {purchaseJobId && <div style={{ marginBottom: 8, color: '#8b949e', fontFamily: 'monospace', fontSize: 12 }}>작업 ID {purchaseJobId}</div>}
+        {isPurchaseAutoDryRun && (
+          <div style={{ background: '#3a2e00', border: '1px solid #9e6a03', color: '#e3b341', borderRadius: 6, padding: 10, lineHeight: 1.5, marginBottom: 10 }}>
+            현재 구매 자동화 서버가 테스트모드라 실제 컴퓨존 주문과 그룹웨어 품의는 실행하지 않습니다.
+          </div>
+        )}
+        {purchaseJob?.approval_document_url && (
+          <a href={purchaseJob.approval_document_url} target="_blank" rel="noreferrer" style={{ display: 'inline-block', color: '#58a6ff', marginBottom: 10 }}>품의 문서 열기</a>
+        )}
+        {workflowLog.length > 0 && (
+          <div style={{ display: 'grid', gap: 6 }}>
+            {workflowLog.map((log, idx) => (
+              <div key={idx} style={{
+                display: 'flex',
+                gap: 8,
+                color: log.level === 'error' ? '#f85149' : log.level === 'success' ? '#3fb950' : '#c9d1d9',
+                background: '#161b22',
+                border: '1px solid #21262d',
                 borderRadius: 6,
-                padding: 10,
+                padding: '7px 9px',
               }}>
-                {result.lastStep.error || result.lastStep.message}
+                <span style={{ color: '#8b949e', fontFamily: 'monospace' }}>{log.at}</span>
+                <span>{log.message}</span>
               </div>
-            )}
+            ))}
+          </div>
+        )}
+        {result?.lastStep && (
+          <div style={{
+            marginTop: 10,
+            color: result.lastStep.error ? '#f85149' : '#c9d1d9',
+            background: result.lastStep.error ? '#3a1a1a' : '#161b22',
+            border: `1px solid ${result.lastStep.error ? '#f85149' : '#30363d'}`,
+            borderRadius: 6,
+            padding: 10,
+          }}>
+            {result.lastStep.error || result.lastStep.message}
           </div>
         )}
       </div>
@@ -4630,9 +4613,6 @@ function PurchaseCartPanel({ showMsg, currentUser }) {
               <Field label="품의 제목 *">
                 <input value={approvalTitle} readOnly style={{ ...inputStyle, color: '#e6edf3', background: '#0d1117' }} />
               </Field>
-              <Field label="구매 자동화 서버 주소 *">
-                <input value={form.purchaseAutoUrl} onChange={e => setForm(f => ({ ...f, purchaseAutoUrl: e.target.value }))} style={inputStyle} />
-              </Field>
               <Field label="요청자 *">
                 <input value={form.requester} onChange={e => setForm(f => ({ ...f, requester: e.target.value }))} style={inputStyle} />
               </Field>
@@ -4643,17 +4623,50 @@ function PurchaseCartPanel({ showMsg, currentUser }) {
                 <input type="checkbox" checked={form.allowPartial} onChange={e => setForm(f => ({ ...f, allowPartial: e.target.checked }))} style={{ accentColor: '#58a6ff' }} />
                 컴퓨존 상품만 먼저 요청 생성
               </label>
-              <button onClick={checkout} disabled={saving || split.compuzone.length === 0} style={{
+              <button onClick={openPurchaseWorkflow} disabled={saving || split.compuzone.length === 0} style={{
                 width: '100%', background: saving || split.compuzone.length === 0 ? '#30363d' : '#238636',
                 border: `1px solid ${saving || split.compuzone.length === 0 ? '#444c56' : '#2ea043'}`,
                 color: '#fff', padding: '10px 14px', borderRadius: 6,
                 cursor: saving || split.compuzone.length === 0 ? 'not-allowed' : 'pointer', fontSize: 14, fontWeight: 800,
-              }}>{saving ? '요청 생성 중...' : '구매 요청 생성'}</button>
+              }}>{saving ? '진행 준비 중...' : '구매 & 품의 진행'}</button>
             </div>
           </div>
-          {renderPurchaseActionPanel()}
 
         </>
+      )}
+
+      {purchaseModalOpen && (
+        <Modal title="구매 & 품의 진행" onClose={() => setPurchaseModalOpen(false)} width={680}>
+          <Field label="컴퓨존 구매계정 *">
+            <select value={automationForm.compuzoneAccount} onChange={e => setAutomationForm(f => ({ ...f, compuzoneAccount: e.target.value }))} style={inputStyle}>
+              <option value="ds1500">ds1500</option>
+              <option value="reum0009">reum0009</option>
+            </select>
+          </Field>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+            <Field label="그룹웨어 계정 *">
+              <input value={automationForm.groupwareLoginId} onChange={e => setAutomationForm(f => ({ ...f, groupwareLoginId: e.target.value }))} style={inputStyle} placeholder="본인 그룹웨어 ID" />
+            </Field>
+            <Field label="그룹웨어 비밀번호 *">
+              <input type="password" value={automationForm.groupwareLoginPassword} onChange={e => setAutomationForm(f => ({ ...f, groupwareLoginPassword: e.target.value }))} style={inputStyle} placeholder="비밀번호" />
+            </Field>
+          </div>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, marginTop: 4 }}>
+            <button onClick={() => runPurchaseAutoStep('run-compuzone-order', '컴퓨존 주문/견적 실행')} disabled={!!runningStep || saving || split.compuzone.length === 0} style={{
+              background: runningStep || saving || split.compuzone.length === 0 ? '#30363d' : '#1f6feb',
+              border: `1px solid ${runningStep || saving || split.compuzone.length === 0 ? '#444c56' : '#58a6ff'}`,
+              color: '#fff', padding: '10px 14px', borderRadius: 6,
+              cursor: runningStep || saving || split.compuzone.length === 0 ? 'not-allowed' : 'pointer', fontSize: 14, fontWeight: 800,
+            }}>{runningStep === 'run-compuzone-order' || saving ? '주문/견적 진행 중...' : '컴퓨존 주문/견적 실행'}</button>
+            <button onClick={() => runPurchaseAutoStep('submit-approval', '그룹웨어 품의 상신')} disabled={!!runningStep || !purchaseJob?.order_no || !purchaseJob?.quote_pdf_path} style={{
+              background: runningStep || !purchaseJob?.order_no || !purchaseJob?.quote_pdf_path ? '#30363d' : '#238636',
+              border: `1px solid ${runningStep || !purchaseJob?.order_no || !purchaseJob?.quote_pdf_path ? '#444c56' : '#2ea043'}`,
+              color: '#fff', padding: '10px 14px', borderRadius: 6,
+              cursor: runningStep || !purchaseJob?.order_no || !purchaseJob?.quote_pdf_path ? 'not-allowed' : 'pointer', fontSize: 14, fontWeight: 800,
+            }}>{runningStep === 'submit-approval' ? '품의 상신 중...' : '그룹웨어 품의 상신'}</button>
+          </div>
+          {renderPurchaseActionPanel()}
+        </Modal>
       )}
 
       <ImagePreviewModal product={imagePreview} onClose={() => setImagePreview(null)} />

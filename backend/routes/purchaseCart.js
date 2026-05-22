@@ -557,6 +557,36 @@ function purchaseAutoPayload({ body, compuzoneItems }) {
   };
 }
 
+
+async function purchaseAutoRequest(path, { method = 'GET', body = null } = {}) {
+  const response = await fetch(`${PURCHASE_AUTO_API_BASE_URL}${path}`, {
+    method,
+    headers: body ? { 'Content-Type': 'application/json' } : undefined,
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  const data = await response.json().catch(() => ({}));
+  return { response, data };
+}
+
+async function purchaseAutoHealth() {
+  try {
+    const { response, data } = await purchaseAutoRequest('/health');
+    return response.ok ? data : null;
+  } catch (_) {
+    return null;
+  }
+}
+
+function purchaseAutoError(data, fallback) {
+  return data?.detail || data?.error || fallback;
+}
+
+function selectedCompuzoneAccount(value) {
+  const account = String(value || '').trim();
+  if (['ds1500', 'reum0009'].includes(account)) return account;
+  return '';
+}
+
 function validatePurchasePayload(payload, body = {}) {
   if (!payload.corp) return '법인/회사 구분을 입력하세요.';
   if (!payload.title) return '품의 제목을 입력하세요.';
@@ -766,15 +796,13 @@ router.post('/checkout', roleAuth(WRITE_ROLES), async (req, res) => {
     const validationError = validatePurchasePayload(payload, req.body || {});
     if (validationError) return res.status(400).json({ error: validationError, split });
 
-    const response = await fetch(`${PURCHASE_AUTO_API_BASE_URL}/api/purchase-jobs`, {
+    const { response, data } = await purchaseAutoRequest('/api/purchase-jobs', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
+      body: payload,
     });
-    const data = await response.json().catch(() => ({}));
     if (!response.ok) {
       return res.status(response.status).json({
-        error: data?.detail || data?.error || 'Purchase_Auto 구매 작업 생성에 실패했습니다.',
+        error: purchaseAutoError(data, 'Purchase_Auto 구매 작업 생성에 실패했습니다.'),
         purchaseAutoStatus: response.status,
         split,
       });
@@ -782,10 +810,58 @@ router.post('/checkout', roleAuth(WRITE_ROLES), async (req, res) => {
 
     res.json({
       purchaseJob: data,
-      sentTo: PURCHASE_AUTO_API_BASE_URL,
       split,
       payload,
+      purchaseAutoHealth: await purchaseAutoHealth(),
     });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+
+router.post('/jobs/:jobId/run-compuzone-order', roleAuth(WRITE_ROLES), async (req, res) => {
+  try {
+    const jobId = String(req.params.jobId || '').trim();
+    const account = selectedCompuzoneAccount(req.body?.compuzoneAccount || req.body?.compuzone_login_id);
+    if (!jobId) return res.status(400).json({ error: '구매 작업 ID가 없습니다.' });
+    if (!account) return res.status(400).json({ error: '컴퓨존 구매계정을 선택하세요.' });
+
+    const { response, data } = await purchaseAutoRequest(`/api/purchase-jobs/${encodeURIComponent(jobId)}/run-compuzone-order`, {
+      method: 'POST',
+      body: { compuzone_login_id: account },
+    });
+    if (!response.ok) {
+      return res.status(response.status).json({
+        error: purchaseAutoError(data, '컴퓨존 주문/견적 실행에 실패했습니다.'),
+        purchaseAutoStatus: response.status,
+      });
+    }
+    res.json({ ...data, purchaseAutoHealth: await purchaseAutoHealth() });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.post('/jobs/:jobId/submit-approval', roleAuth(WRITE_ROLES), async (req, res) => {
+  try {
+    const jobId = String(req.params.jobId || '').trim();
+    const loginId = String(req.body?.groupwareLoginId || req.body?.groupware_login_id || '').trim();
+    const loginPassword = String(req.body?.groupwareLoginPassword || req.body?.groupware_login_password || '').trim();
+    if (!jobId) return res.status(400).json({ error: '구매 작업 ID가 없습니다.' });
+    if (!loginId || !loginPassword) return res.status(400).json({ error: '그룹웨어 계정과 비밀번호를 입력하세요.' });
+
+    const { response, data } = await purchaseAutoRequest(`/api/purchase-jobs/${encodeURIComponent(jobId)}/submit-approval`, {
+      method: 'POST',
+      body: { groupware_login_id: loginId, groupware_login_password: loginPassword },
+    });
+    if (!response.ok) {
+      return res.status(response.status).json({
+        error: purchaseAutoError(data, '그룹웨어 품의 상신에 실패했습니다.'),
+        purchaseAutoStatus: response.status,
+      });
+    }
+    res.json({ ...data, purchaseAutoHealth: await purchaseAutoHealth() });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
