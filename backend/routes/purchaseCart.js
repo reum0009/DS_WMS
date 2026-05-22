@@ -9,6 +9,7 @@ const router = express.Router();
 
 const PURCHASE_AUTO_API_BASE_URL = String(process.env.PURCHASE_AUTO_API_BASE_URL || 'http://127.0.0.1:5008').replace(/\/+$/, '');
 const PURCHASE_AUTO_START_TIMEOUT_MS = parseInt(process.env.PURCHASE_AUTO_START_TIMEOUT_MS || '20000', 10);
+const PURCHASE_AUTO_STEP_TIMEOUT_MS = parseInt(process.env.PURCHASE_AUTO_STEP_TIMEOUT_MS || '1800000', 10);
 const COMPUZONE_PRODUCT_BASE_URL = 'https://www.compuzone.co.kr/product/product_detail.htm?ProductNo=';
 const WRITE_ROLES = ['admin', 'dept_admin'];
 
@@ -681,15 +682,15 @@ async function ensurePurchaseAutoRunning() {
   return purchaseAutoStartPromise;
 }
 
-async function purchaseAutoRequest(pathname, { method = 'GET', body = null, autoStart = true } = {}) {
+async function purchaseAutoRequest(pathname, { method = 'GET', body = null, autoStart = true, timeoutMs = 5000 } = {}) {
   try {
-    return await purchaseAutoFetch(pathname, { method, body });
+    return await purchaseAutoFetch(pathname, { method, body, timeoutMs });
   } catch (error) {
     if (!autoStart) throw error;
   }
 
   await ensurePurchaseAutoRunning();
-  return purchaseAutoFetch(pathname, { method, body });
+  return purchaseAutoFetch(pathname, { method, body, timeoutMs });
 }
 
 async function purchaseAutoHealth() {
@@ -949,6 +950,7 @@ router.post('/jobs/:jobId/run-compuzone-order', roleAuth(WRITE_ROLES), async (re
     const { response, data } = await purchaseAutoRequest(`/api/purchase-jobs/${encodeURIComponent(jobId)}/run-compuzone-order`, {
       method: 'POST',
       body: { compuzone_login_id: account },
+      timeoutMs: PURCHASE_AUTO_STEP_TIMEOUT_MS,
     });
     if (!response.ok) {
       return res.status(response.status).json({
@@ -973,6 +975,7 @@ router.post('/jobs/:jobId/submit-approval', roleAuth(WRITE_ROLES), async (req, r
     const { response, data } = await purchaseAutoRequest(`/api/purchase-jobs/${encodeURIComponent(jobId)}/submit-approval`, {
       method: 'POST',
       body: { groupware_login_id: loginId, groupware_login_password: loginPassword },
+      timeoutMs: PURCHASE_AUTO_STEP_TIMEOUT_MS,
     });
     if (!response.ok) {
       return res.status(response.status).json({
