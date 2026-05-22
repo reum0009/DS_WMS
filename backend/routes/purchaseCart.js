@@ -1,14 +1,19 @@
 const express = require('express');
+const fs = require('fs');
+const path = require('path');
+const { spawn } = require('child_process');
 const { QueryTypes } = require('sequelize');
 const { auth, roleAuth } = require('../middleware/auth');
 
 const router = express.Router();
 
 const PURCHASE_AUTO_API_BASE_URL = String(process.env.PURCHASE_AUTO_API_BASE_URL || 'http://127.0.0.1:5008').replace(/\/+$/, '');
+const PURCHASE_AUTO_START_TIMEOUT_MS = parseInt(process.env.PURCHASE_AUTO_START_TIMEOUT_MS || '20000', 10);
 const COMPUZONE_PRODUCT_BASE_URL = 'https://www.compuzone.co.kr/product/product_detail.htm?ProductNo=';
 const WRITE_ROLES = ['admin', 'dept_admin'];
 
 let schemaReady = false;
+let purchaseAutoStartPromise = null;
 
 function parsePositiveInt(value, fallback = null) {
   const n = parseInt(value, 10);
@@ -558,23 +563,137 @@ function purchaseAutoPayload({ body, compuzoneItems }) {
 }
 
 
-async function purchaseAutoRequest(path, { method = 'GET', body = null } = {}) {
-  const response = await fetch(`${PURCHASE_AUTO_API_BASE_URL}${path}`, {
-    method,
-    headers: body ? { 'Content-Type': 'application/json' } : undefined,
-    body: body ? JSON.stringify(body) : undefined,
-  });
-  const data = await response.json().catch(() => ({}));
-  return { response, data };
+function commandExists(candidate) {
+  if (!candidate) return false;
+  if (candidate.includes('\\') || candidate.includes('/')) return fs.existsSync(candidate);
+  return true;
 }
 
-async function purchaseAutoHealth() {
+function resolvePurchaseAutoPython() {
+  const candidates = [
+    process.env.PURCHASE_AUTO_PYTHON,
+    'C:\\Users\\user\\AppData\\Local\\Programs\\Python\\Python311\\python.exe',
+    'C:\\Users\\Administrator\\AppData\\Local\\Programs\\Python\\Python311\\python.exe',
+    'py',
+    'python',
+  ].filter(Boolean);
+  return candidates.find(commandExists) || '';
+}
+
+function resolvePurchaseAutoProjectDir() {
+  const candidates = [
+    process.env.PURCHASE_AUTO_PROJECT_DIR,
+    'C:\\Users\\user\\Desktop\\개발파일\\구매, 품의 자동화',
+    'C:\\Users\\Administrator\\Desktop\\개발파일\\구매, 품의 자동화',
+    'C:\\Purchase_Auto',
+    'C:\\PCM-Server\\Purchase_Auto',
+    'C:\\Program Files (x86)\\WarehousePOS\\Purchase_Auto',
+  ].filter(Boolean);
+  return candidates.find(dir => fs.existsSync(path.join(dir, 'purchase_auto', '__main__.py'))) || '';
+}
+
+async function delay(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+async function purchaseAutoFetch(pathname, { method = 'GET', body = null, timeoutMs = 5000 } = {}) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    const { response, data } = await purchaseAutoRequest('/health');
+    const response = await fetch(`${PURCHASE_AUTO_API_BASE_URL}${pathname}`, {
+      method,
+      headers: body ? { 'Content-Type': 'application/json' } : undefined,
+      body: body ? JSON.stringify(body) : undefined,
+      signal: controller.signal,
+    });
+    const data = await response.json().catch(() => ({}));
+    return { response, data };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function checkPurchaseAutoHealth() {
+  try {
+    const { response, data } = await purchaseAutoFetch('/health', { timeoutMs: 2500 });
     return response.ok ? data : null;
   } catch (_) {
     return null;
   }
+}
+
+async function waitPurchaseAutoHealth() {
+  const deadline = Date.now() + Math.max(5000, PURCHASE_AUTO_START_TIMEOUT_MS || 20000);
+  while (Date.now() < deadline) {
+    const health = await checkPurchaseAutoHealth();
+    if (health?.ok) return health;
+    await delay(500);
+  }
+  return null;
+}
+
+function startPurchaseAutoProcess() {
+  const projectDir = resolvePurchaseAutoProjectDir();
+  if (!projectDir) {
+    throw new Error('Purchase_Auto 자동 실행 경로를 찾지 못했습니다. 서버에 Purchase_Auto를 설치하거나 PURCHASE_AUTO_PROJECT_DIR 환경변수를 설정하세요.');
+  }
+  const python = resolvePurchaseAutoPython();
+  if (!python) {
+    throw new Error('Purchase_Auto 실행용 Python을 찾지 못했습니다. PURCHASE_AUTO_PYTHON 환경변수를 설정하세요.');
+  }
+
+  const args = python.toLowerCase() === 'py'
+    ? ['-3', '-m', 'purchase_auto']
+    : ['-m', 'purchase_auto'];
+  const child = spawn(python, args, {
+    cwd: projectDir,
+    detached: true,
+    stdio: 'ignore',
+    windowsHide: true,
+    env: {
+      ...process.env,
+      PURCHASE_AUTO_HOST: process.env.PURCHASE_AUTO_HOST || '127.0.0.1',
+      PURCHASE_AUTO_PORT: process.env.PURCHASE_AUTO_PORT || '5008',
+      PURCHASE_AUTO_DRY_RUN: process.env.PURCHASE_AUTO_DRY_RUN || '0',
+      PURCHASE_AUTO_ENABLE_LIVE_COMPUZONE_ORDER: process.env.PURCHASE_AUTO_ENABLE_LIVE_COMPUZONE_ORDER || '1',
+      PURCHASE_AUTO_ENABLE_LIVE_GROUPWARE_SUBMIT: process.env.PURCHASE_AUTO_ENABLE_LIVE_GROUPWARE_SUBMIT || '1',
+    },
+  });
+  child.unref();
+}
+
+async function ensurePurchaseAutoRunning() {
+  const current = await checkPurchaseAutoHealth();
+  if (current?.ok) return current;
+
+  if (!purchaseAutoStartPromise) {
+    purchaseAutoStartPromise = (async () => {
+      startPurchaseAutoProcess();
+      const health = await waitPurchaseAutoHealth();
+      if (!health?.ok) {
+        throw new Error('Purchase_Auto를 자동 실행했지만 health 응답을 받지 못했습니다.');
+      }
+      return health;
+    })().finally(() => {
+      purchaseAutoStartPromise = null;
+    });
+  }
+  return purchaseAutoStartPromise;
+}
+
+async function purchaseAutoRequest(pathname, { method = 'GET', body = null, autoStart = true } = {}) {
+  try {
+    return await purchaseAutoFetch(pathname, { method, body });
+  } catch (error) {
+    if (!autoStart) throw error;
+  }
+
+  await ensurePurchaseAutoRunning();
+  return purchaseAutoFetch(pathname, { method, body });
+}
+
+async function purchaseAutoHealth() {
+  return checkPurchaseAutoHealth();
 }
 
 function purchaseAutoError(data, fallback) {
