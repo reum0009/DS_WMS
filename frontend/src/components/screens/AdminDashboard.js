@@ -4150,6 +4150,7 @@ function DbConfigPanel({ showMsg }) {
 }
 
 function PurchaseCartPanel({ showMsg, currentUser }) {
+  const purchaseAutoBaseUrl = 'http://127.0.0.1:5008';
   const [cart, setCart] = useState({ items: [], totalQuantity: 0, totalAmount: 0 });
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -4262,20 +4263,63 @@ function PurchaseCartPanel({ showMsg, currentUser }) {
     }
   };
 
-  const purchaseCheckoutPayload = () => ({
-    corp: form.corp,
-    deliveryName: selectedDelivery.label,
-    deliveryKeywords: selectedDelivery.keywords,
-    businessNumber: form.businessNumber,
-    businessContactName: selectedDelivery.businessContactName,
-    requester: form.requester,
-    memo: form.memo,
-    allowPartial: form.allowPartial,
-  });
+  const purchaseAutoPayload = () => {
+    const metaLines = [
+      selectedDelivery.factory,
+      `배송지=${selectedDelivery.label}`,
+      `배송키워드=${selectedDelivery.keywords.join(',')}`,
+      `사업자번호=${form.businessNumber}`,
+      `사업자담당자=${selectedDelivery.businessContactName}`,
+      form.memo,
+    ].filter(Boolean);
+
+    return {
+      corp: form.corp,
+      title: approvalTitle,
+      requester: form.requester,
+      memo: metaLines.join('\n'),
+      items: split.compuzone.map(item => ({
+        url: item.product?.source?.productUrl,
+        quantity: item.quantity,
+      })),
+    };
+  };
+
+  const purchaseAutoConnectionError = () => (
+    'Purchase_Auto 로컬 서버 연결 실패: 회계업무 자동화 WEB v1.0 또는 python -m purchase_auto가 이 PC에서 실행 중인지 확인하세요.'
+  );
+
+  const fetchPurchaseAutoHealth = async () => {
+    try {
+      const response = await fetch(`${purchaseAutoBaseUrl}/health`);
+      if (!response.ok) return null;
+      return await response.json();
+    } catch (_) {
+      return null;
+    }
+  };
+
+  const fetchPurchaseAutoJson = async (path, { method = 'GET', body = null } = {}) => {
+    let response;
+    try {
+      response = await fetch(`${purchaseAutoBaseUrl}${path}`, {
+        method,
+        headers: body ? { 'Content-Type': 'application/json' } : undefined,
+        body: body ? JSON.stringify(body) : undefined,
+      });
+    } catch (error) {
+      throw new Error(purchaseAutoConnectionError());
+    }
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      throw new Error(data?.detail || data?.error || `Purchase_Auto 응답 오류: HTTP ${response.status}`);
+    }
+    return data;
+  };
 
   const createPurchaseJob = async () => {
     if ((split.manual.length || split.blocked.length) && !form.allowPartial) {
-      const message = '컴퓨존 자동구매가 안 되는 항목이 포함되어 있습니다. 컴퓨존 상품만 먼저 요청하려면 옵션을 켜세요.';
+      const message = '컴퓨존 자동구매가 안 되는 항목이 포함되어 있습니다. 컴퓨존 상품만 먼저 진행하려면 옵션을 켜세요.';
       setResult({ error: message });
       appendWorkflowLog(message, 'error');
       showMsg(message, 'error');
@@ -4284,21 +4328,25 @@ function PurchaseCartPanel({ showMsg, currentUser }) {
 
     setSaving(true);
     setResult(null);
-    appendWorkflowLog('구매 요청 생성 중');
+    appendWorkflowLog('Purchase_Auto 연결 확인 중');
     try {
-      const res = await purchaseCartAPI.checkout(purchaseCheckoutPayload());
-      const data = res.data || {};
+      const payload = purchaseAutoPayload();
+      const health = await fetchPurchaseAutoHealth();
+      const data = await fetchPurchaseAutoJson('/api/purchase-jobs', {
+        method: 'POST',
+        body: payload,
+      });
       setResult({
-        purchaseJob: data.purchaseJob,
-        payload: data.payload,
-        split: data.split || split,
-        purchaseAutoHealth: data.purchaseAutoHealth || null,
+        purchaseJob: data,
+        payload,
+        split,
+        purchaseAutoHealth: health,
       });
       appendWorkflowLog('구매 요청 생성 완료', 'success');
       showMsg('구매 요청을 생성했습니다');
-      return data.purchaseJob?.job || data.purchaseJob;
+      return data?.job || data;
     } catch (e) {
-      const message = e.response?.data?.error || e.message || '구매 요청 생성 실패';
+      const message = e.message || '구매 요청 생성 실패';
       setResult({ error: message });
       appendWorkflowLog(message, 'error');
       showMsg(message, 'error');
@@ -4387,18 +4435,21 @@ function PurchaseCartPanel({ showMsg, currentUser }) {
     setRunningStep(step);
     appendWorkflowLog(`${label} 시작`);
     try {
-      const response = step === 'run-compuzone-order'
-        ? await purchaseCartAPI.runCompuzoneOrder(activeJobId, { compuzoneAccount: automationForm.compuzoneAccount })
-        : await purchaseCartAPI.submitApproval(activeJobId, {
-            groupwareLoginId: automationForm.groupwareLoginId,
-            groupwareLoginPassword: automationForm.groupwareLoginPassword,
-          });
-      const data = response.data || {};
+      const data = await fetchPurchaseAutoJson(`/api/purchase-jobs/${encodeURIComponent(activeJobId)}/${step}`, {
+        method: 'POST',
+        body: step === 'run-compuzone-order'
+          ? { compuzone_login_id: automationForm.compuzoneAccount }
+          : {
+              groupware_login_id: automationForm.groupwareLoginId,
+              groupware_login_password: automationForm.groupwareLoginPassword,
+            },
+      });
+      const health = await fetchPurchaseAutoHealth();
       const nextJob = data?.job || data;
       setResult(current => ({
         ...(current || {}),
         purchaseJob: nextJob,
-        purchaseAutoHealth: data.purchaseAutoHealth || current?.purchaseAutoHealth || null,
+        purchaseAutoHealth: health || current?.purchaseAutoHealth || null,
         lastStep: {
           step,
           label,
