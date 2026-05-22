@@ -4266,11 +4266,19 @@ function PurchaseCartPanel({ showMsg, currentUser }) {
       if (!response.ok) {
         throw new Error(data?.detail || data?.error || `Purchase_Auto 응답 오류: HTTP ${response.status}`);
       }
+      let purchaseAutoHealth = null;
+      try {
+        const healthResponse = await fetch(`${baseUrl}/health`);
+        if (healthResponse.ok) purchaseAutoHealth = await healthResponse.json();
+      } catch (_) {
+        purchaseAutoHealth = null;
+      }
       setResult({
         purchaseJob: data,
         sentTo: baseUrl,
         payload,
         split,
+        purchaseAutoHealth,
       });
       showMsg('Purchase_Auto 구매 작업을 생성했습니다');
     } catch (e) {
@@ -4348,8 +4356,10 @@ function PurchaseCartPanel({ showMsg, currentUser }) {
 
   const purchaseJob = result?.purchaseJob?.job || result?.purchaseJob || null;
   const purchaseJobId = purchaseJob?.job_id;
-  const canSubmitApproval = Boolean(purchaseJob?.order_no && purchaseJob?.quote_pdf_path);
-  const canMarkInvoice = ['approval_submitted', 'waiting_tax_invoice', 'tax_invoice_received'].includes(purchaseJob?.status);
+  const isPurchaseAutoDryRun = result?.purchaseAutoHealth?.dry_run === true;
+  const canRunPurchaseAutoStep = Boolean(purchaseJobId && !isPurchaseAutoDryRun);
+  const canSubmitApproval = Boolean(purchaseJob?.order_no && purchaseJob?.quote_pdf_path && !isPurchaseAutoDryRun);
+  const canMarkInvoice = !isPurchaseAutoDryRun && ['approval_submitted', 'waiting_tax_invoice', 'tax_invoice_received'].includes(purchaseJob?.status);
 
   const runPurchaseAutoStep = async (step, label) => {
     const baseUrl = String(result?.sentTo || form.purchaseAutoUrl || '').trim().replace(/\/+$/, '');
@@ -4360,6 +4370,17 @@ function PurchaseCartPanel({ showMsg, currentUser }) {
 
     setRunningStep(step);
     try {
+      let health = result?.purchaseAutoHealth || null;
+      try {
+        const healthResponse = await fetch(`${baseUrl}/health`);
+        if (healthResponse.ok) health = await healthResponse.json();
+      } catch (_) {
+        health = result?.purchaseAutoHealth || null;
+      }
+      if (health?.dry_run === true) {
+        setResult(current => ({ ...current, purchaseAutoHealth: health }));
+        throw new Error('Purchase_Auto 테스트모드(dry_run=True)라 실제 주문/품의 실행을 막았습니다. 실사용 전 PURCHASE_AUTO_DRY_RUN=0 설정이 필요합니다.');
+      }
       const response = await fetch(`${baseUrl}/api/purchase-jobs/${purchaseJobId}/${step}`, {
         method: 'POST',
       });
@@ -4397,6 +4418,77 @@ function PurchaseCartPanel({ showMsg, currentUser }) {
     }
   };
 
+  const renderPurchaseActionPanel = () => {
+    if (!result) return null;
+
+    return (
+      <div style={{
+        marginTop: 12,
+        background: result.error ? '#3a1a1a' : '#0d1117',
+        border: `1px solid ${result.error ? '#f85149' : '#30363d'}`,
+        borderRadius: 8,
+        padding: 12,
+        color: result.error ? '#f85149' : '#c9d1d9',
+        fontSize: 12,
+      }}>
+        {result.error ? (
+          <div>{result.error}</div>
+        ) : (
+          <div>
+            <div style={{ color: '#3fb950', fontWeight: 800, marginBottom: 8 }}>
+              {isPurchaseAutoDryRun ? '테스트모드 작업 생성 완료' : '구매 작업 생성 완료'}
+              {purchaseJobId && <span style={{ marginLeft: 8, fontFamily: 'monospace' }}>{purchaseJobId}</span>}
+            </div>
+            <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 10 }}>
+              {purchaseJob?.status && <Badge color="green">상태 {purchaseJob.status}</Badge>}
+              {purchaseJob?.order_no && <Badge color="blue">주문번호 {purchaseJob.order_no}</Badge>}
+              {isPurchaseAutoDryRun && <Badge color="yellow">테스트모드</Badge>}
+            </div>
+            {isPurchaseAutoDryRun && (
+              <div style={{ background: '#3a2e00', border: '1px solid #9e6a03', color: '#e3b341', borderRadius: 6, padding: 8, marginBottom: 10, lineHeight: 1.5 }}>
+                dry_run=True 상태라 실제 컴퓨존 주문/그룹웨어 품의 실행을 막았습니다.
+              </div>
+            )}
+            {purchaseJob?.approval_document_url && (
+              <a href={purchaseJob.approval_document_url} target="_blank" rel="noreferrer" style={{ display: 'inline-block', color: '#58a6ff', marginBottom: 10 }}>품의 문서 열기</a>
+            )}
+            <div style={{ display: 'grid', gap: 8 }}>
+              <button onClick={() => runPurchaseAutoStep('run-compuzone-order', '컴퓨존 주문/견적 실행')} disabled={!!runningStep || !canRunPurchaseAutoStep} style={{
+                background: runningStep || !canRunPurchaseAutoStep ? '#30363d' : '#1f6feb',
+                border: `1px solid ${runningStep || !canRunPurchaseAutoStep ? '#444c56' : '#58a6ff'}`,
+                color: '#fff', padding: '8px 10px', borderRadius: 6,
+                cursor: runningStep || !canRunPurchaseAutoStep ? 'not-allowed' : 'pointer', fontSize: 12, fontWeight: 700,
+              }}>{runningStep === 'run-compuzone-order' ? '주문 실행 중...' : '컴퓨존 주문/견적 실행'}</button>
+              <button onClick={() => runPurchaseAutoStep('submit-approval', '그룹웨어 품의 상신')} disabled={!!runningStep || !canSubmitApproval} style={{
+                background: runningStep || !canSubmitApproval ? '#30363d' : '#238636',
+                border: `1px solid ${runningStep || !canSubmitApproval ? '#444c56' : '#2ea043'}`,
+                color: '#fff', padding: '8px 10px', borderRadius: 6,
+                cursor: runningStep || !canSubmitApproval ? 'not-allowed' : 'pointer', fontSize: 12, fontWeight: 700,
+              }}>{runningStep === 'submit-approval' ? '품의 상신 중...' : '그룹웨어 품의 상신'}</button>
+              <button onClick={() => runPurchaseAutoStep('mark-tax-invoice-received', '세금계산서 수신 처리')} disabled={!!runningStep || !canMarkInvoice} style={{
+                background: runningStep || !canMarkInvoice ? '#30363d' : '#8957e5',
+                border: `1px solid ${runningStep || !canMarkInvoice ? '#444c56' : '#a371f7'}`,
+                color: '#fff', padding: '8px 10px', borderRadius: 6,
+                cursor: runningStep || !canMarkInvoice ? 'not-allowed' : 'pointer', fontSize: 12, fontWeight: 700,
+              }}>{runningStep === 'mark-tax-invoice-received' ? '처리 중...' : '세금계산서 수신 처리'}</button>
+            </div>
+            {result.lastStep && (
+              <div style={{
+                marginTop: 10,
+                color: result.lastStep.error ? '#f85149' : '#c9d1d9',
+                background: result.lastStep.error ? '#3a1a1a' : '#161b22',
+                border: `1px solid ${result.lastStep.error ? '#f85149' : '#30363d'}`,
+                borderRadius: 6,
+                padding: 8,
+              }}>
+                {result.lastStep.error || result.lastStep.message}
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+    );
+  };
   return (
     <div>
       <SectionHeader
@@ -4541,62 +4633,10 @@ function PurchaseCartPanel({ showMsg, currentUser }) {
                 color: '#fff', padding: '10px 14px', borderRadius: 6,
                 cursor: saving || split.compuzone.length === 0 ? 'not-allowed' : 'pointer', fontSize: 14, fontWeight: 800,
               }}>{saving ? '생성 중...' : 'Purchase_Auto 작업 생성'}</button>
+              {renderPurchaseActionPanel()}
             </div>
           </div>
 
-          {result && (
-            <div style={{ marginTop: 16, background: result.error ? '#3a1a1a' : '#1a3a2a', border: `1px solid ${result.error ? '#f85149' : '#3fb950'}`, borderRadius: 8, padding: 14, color: result.error ? '#f85149' : '#3fb950', fontSize: 13 }}>
-              {result.error ? (
-                <div>{result.error}</div>
-              ) : (
-                <div>
-                  <div style={{ fontWeight: 800, marginBottom: 8 }}>
-                    구매 작업 생성 완료
-                    {purchaseJobId && <span style={{ marginLeft: 8, fontFamily: 'monospace' }}>{purchaseJobId}</span>}
-                  </div>
-                  <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', color: '#c9d1d9', marginBottom: 12 }}>
-                    {purchaseJob?.status && <Badge color="green">상태 {purchaseJob.status}</Badge>}
-                    {purchaseJob?.order_no && <Badge color="blue">주문번호 {purchaseJob.order_no}</Badge>}
-                    {purchaseJob?.approval_document_url && (
-                      <a href={purchaseJob.approval_document_url} target="_blank" rel="noreferrer" style={{ color: '#58a6ff' }}>품의 문서 열기</a>
-                    )}
-                  </div>
-                  <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-                    <button onClick={() => runPurchaseAutoStep('run-compuzone-order', '컴퓨존 주문/견적 실행')} disabled={!!runningStep || !purchaseJobId} style={{
-                      background: runningStep || !purchaseJobId ? '#30363d' : '#1f6feb',
-                      border: `1px solid ${runningStep || !purchaseJobId ? '#444c56' : '#58a6ff'}`,
-                      color: '#fff', padding: '7px 12px', borderRadius: 6,
-                      cursor: runningStep || !purchaseJobId ? 'not-allowed' : 'pointer', fontSize: 12, fontWeight: 700,
-                    }}>{runningStep === 'run-compuzone-order' ? '주문 실행 중...' : '컴퓨존 주문/견적 실행'}</button>
-                    <button onClick={() => runPurchaseAutoStep('submit-approval', '그룹웨어 품의 상신')} disabled={!!runningStep || !canSubmitApproval} style={{
-                      background: runningStep || !canSubmitApproval ? '#30363d' : '#238636',
-                      border: `1px solid ${runningStep || !canSubmitApproval ? '#444c56' : '#2ea043'}`,
-                      color: '#fff', padding: '7px 12px', borderRadius: 6,
-                      cursor: runningStep || !canSubmitApproval ? 'not-allowed' : 'pointer', fontSize: 12, fontWeight: 700,
-                    }}>{runningStep === 'submit-approval' ? '품의 상신 중...' : '그룹웨어 품의 상신'}</button>
-                    <button onClick={() => runPurchaseAutoStep('mark-tax-invoice-received', '세금계산서 수신 처리')} disabled={!!runningStep || !canMarkInvoice} style={{
-                      background: runningStep || !canMarkInvoice ? '#30363d' : '#8957e5',
-                      border: `1px solid ${runningStep || !canMarkInvoice ? '#444c56' : '#a371f7'}`,
-                      color: '#fff', padding: '7px 12px', borderRadius: 6,
-                      cursor: runningStep || !canMarkInvoice ? 'not-allowed' : 'pointer', fontSize: 12, fontWeight: 700,
-                    }}>{runningStep === 'mark-tax-invoice-received' ? '처리 중...' : '세금계산서 수신 처리'}</button>
-                  </div>
-                  {result.lastStep && (
-                    <div style={{
-                      marginTop: 10,
-                      color: result.lastStep.error ? '#f85149' : '#c9d1d9',
-                      background: result.lastStep.error ? '#3a1a1a' : '#0d1117',
-                      border: `1px solid ${result.lastStep.error ? '#f85149' : '#30363d'}`,
-                      borderRadius: 6,
-                      padding: 10,
-                    }}>
-                      {result.lastStep.error || result.lastStep.message}
-                    </div>
-                  )}
-                </div>
-              )}
-            </div>
-          )}
         </>
       )}
 
