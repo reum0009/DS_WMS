@@ -4153,6 +4153,7 @@ function PurchaseCartPanel({ showMsg, currentUser }) {
   const [cart, setCart] = useState({ items: [], totalQuantity: 0, totalAmount: 0 });
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [runningStep, setRunningStep] = useState('');
   const [imageRefreshing, setImageRefreshing] = useState(false);
   const [imagePreview, setImagePreview] = useState(null);
   const [result, setResult] = useState(null);
@@ -4345,6 +4346,57 @@ function PurchaseCartPanel({ showMsg, currentUser }) {
     };
   };
 
+  const purchaseJob = result?.purchaseJob?.job || result?.purchaseJob || null;
+  const purchaseJobId = purchaseJob?.job_id;
+  const canSubmitApproval = Boolean(purchaseJob?.order_no && purchaseJob?.quote_pdf_path);
+  const canMarkInvoice = ['approval_submitted', 'waiting_tax_invoice', 'tax_invoice_received'].includes(purchaseJob?.status);
+
+  const runPurchaseAutoStep = async (step, label) => {
+    const baseUrl = String(result?.sentTo || form.purchaseAutoUrl || '').trim().replace(/\/+$/, '');
+    if (!purchaseJobId || !baseUrl) {
+      showMsg('구매 작업 정보가 없습니다', 'error');
+      return;
+    }
+
+    setRunningStep(step);
+    try {
+      const response = await fetch(`${baseUrl}/api/purchase-jobs/${purchaseJobId}/${step}`, {
+        method: 'POST',
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        throw new Error(data?.detail || data?.error || `${label} 실패: HTTP ${response.status}`);
+      }
+
+      const nextJob = data?.job || data;
+      setResult(current => ({
+        ...current,
+        purchaseJob: nextJob,
+        lastStep: {
+          step,
+          label,
+          message: data?.message || `${label} 완료`,
+        },
+      }));
+      showMsg(data?.message || `${label} 완료`);
+    } catch (e) {
+      const message = e?.message === 'Failed to fetch'
+        ? `Purchase_Auto API 연결 실패: ${baseUrl}`
+        : e?.message || `${label} 실패`;
+      setResult(current => ({
+        ...current,
+        lastStep: {
+          step,
+          label,
+          error: message,
+        },
+      }));
+      showMsg(message, 'error');
+    } finally {
+      setRunningStep('');
+    }
+  };
+
   return (
     <div>
       <SectionHeader
@@ -4498,8 +4550,49 @@ function PurchaseCartPanel({ showMsg, currentUser }) {
                 <div>{result.error}</div>
               ) : (
                 <div>
-                  구매 작업 생성 완료
-                  {result.purchaseJob?.job_id && <span style={{ marginLeft: 8, fontFamily: 'monospace' }}>{result.purchaseJob.job_id}</span>}
+                  <div style={{ fontWeight: 800, marginBottom: 8 }}>
+                    구매 작업 생성 완료
+                    {purchaseJobId && <span style={{ marginLeft: 8, fontFamily: 'monospace' }}>{purchaseJobId}</span>}
+                  </div>
+                  <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', color: '#c9d1d9', marginBottom: 12 }}>
+                    {purchaseJob?.status && <Badge color="green">상태 {purchaseJob.status}</Badge>}
+                    {purchaseJob?.order_no && <Badge color="blue">주문번호 {purchaseJob.order_no}</Badge>}
+                    {purchaseJob?.approval_document_url && (
+                      <a href={purchaseJob.approval_document_url} target="_blank" rel="noreferrer" style={{ color: '#58a6ff' }}>품의 문서 열기</a>
+                    )}
+                  </div>
+                  <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                    <button onClick={() => runPurchaseAutoStep('run-compuzone-order', '컴퓨존 주문/견적 실행')} disabled={!!runningStep || !purchaseJobId} style={{
+                      background: runningStep || !purchaseJobId ? '#30363d' : '#1f6feb',
+                      border: `1px solid ${runningStep || !purchaseJobId ? '#444c56' : '#58a6ff'}`,
+                      color: '#fff', padding: '7px 12px', borderRadius: 6,
+                      cursor: runningStep || !purchaseJobId ? 'not-allowed' : 'pointer', fontSize: 12, fontWeight: 700,
+                    }}>{runningStep === 'run-compuzone-order' ? '주문 실행 중...' : '컴퓨존 주문/견적 실행'}</button>
+                    <button onClick={() => runPurchaseAutoStep('submit-approval', '그룹웨어 품의 상신')} disabled={!!runningStep || !canSubmitApproval} style={{
+                      background: runningStep || !canSubmitApproval ? '#30363d' : '#238636',
+                      border: `1px solid ${runningStep || !canSubmitApproval ? '#444c56' : '#2ea043'}`,
+                      color: '#fff', padding: '7px 12px', borderRadius: 6,
+                      cursor: runningStep || !canSubmitApproval ? 'not-allowed' : 'pointer', fontSize: 12, fontWeight: 700,
+                    }}>{runningStep === 'submit-approval' ? '품의 상신 중...' : '그룹웨어 품의 상신'}</button>
+                    <button onClick={() => runPurchaseAutoStep('mark-tax-invoice-received', '세금계산서 수신 처리')} disabled={!!runningStep || !canMarkInvoice} style={{
+                      background: runningStep || !canMarkInvoice ? '#30363d' : '#8957e5',
+                      border: `1px solid ${runningStep || !canMarkInvoice ? '#444c56' : '#a371f7'}`,
+                      color: '#fff', padding: '7px 12px', borderRadius: 6,
+                      cursor: runningStep || !canMarkInvoice ? 'not-allowed' : 'pointer', fontSize: 12, fontWeight: 700,
+                    }}>{runningStep === 'mark-tax-invoice-received' ? '처리 중...' : '세금계산서 수신 처리'}</button>
+                  </div>
+                  {result.lastStep && (
+                    <div style={{
+                      marginTop: 10,
+                      color: result.lastStep.error ? '#f85149' : '#c9d1d9',
+                      background: result.lastStep.error ? '#3a1a1a' : '#0d1117',
+                      border: `1px solid ${result.lastStep.error ? '#f85149' : '#30363d'}`,
+                      borderRadius: 6,
+                      padding: 10,
+                    }}>
+                      {result.lastStep.error || result.lastStep.message}
+                    </div>
+                  )}
                 </div>
               )}
             </div>
