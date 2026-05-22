@@ -4245,7 +4245,7 @@ function PurchaseCartPanel({ showMsg, currentUser }) {
 
   const checkout = async () => {
     if ((split.manual.length || split.blocked.length) && !form.allowPartial) {
-      const message = '컴퓨존 자동구매가 안 되는 항목이 포함되어 있습니다. 컴퓨존 상품만 먼저 생성하려면 옵션을 켜세요.';
+      const message = '컴퓨존 자동구매가 안 되는 항목이 포함되어 있습니다. 컴퓨존 상품만 먼저 요청하려면 옵션을 켜세요.';
       setResult({ error: message });
       showMsg(message, 'error');
       return;
@@ -4280,7 +4280,7 @@ function PurchaseCartPanel({ showMsg, currentUser }) {
         split,
         purchaseAutoHealth,
       });
-      showMsg('Purchase_Auto 구매 작업을 생성했습니다');
+      showMsg('구매 요청을 생성했습니다');
     } catch (e) {
       const message = e?.message === 'Failed to fetch'
         ? `Purchase_Auto API 연결 실패: ${baseUrl} 에서 python -m purchase_auto 실행 여부를 확인하세요.`
@@ -4379,7 +4379,7 @@ function PurchaseCartPanel({ showMsg, currentUser }) {
       }
       if (health?.dry_run === true) {
         setResult(current => ({ ...current, purchaseAutoHealth: health }));
-        throw new Error('Purchase_Auto 테스트모드(dry_run=True)라 실제 주문/품의 실행을 막았습니다. 실사용 전 PURCHASE_AUTO_DRY_RUN=0 설정이 필요합니다.');
+        throw new Error('현재 테스트모드라 실제 주문/품의 실행을 막았습니다. Purchase_Auto 서버에서 PURCHASE_AUTO_DRY_RUN=0으로 바꾼 뒤 다시 시도하세요.');
       }
       const response = await fetch(`${baseUrl}/api/purchase-jobs/${purchaseJobId}/${step}`, {
         method: 'POST',
@@ -4421,65 +4421,81 @@ function PurchaseCartPanel({ showMsg, currentUser }) {
   const renderPurchaseActionPanel = () => {
     if (!result) return null;
 
+    const actionButtonStyle = (enabled, activeBg, activeBorder) => ({
+      background: enabled ? activeBg : '#30363d',
+      border: `1px solid ${enabled ? activeBorder : '#444c56'}`,
+      color: '#fff',
+      padding: '9px 12px',
+      borderRadius: 6,
+      cursor: enabled ? 'pointer' : 'not-allowed',
+      fontSize: 13,
+      fontWeight: 800,
+      minHeight: 38,
+    });
+
+    const orderEnabled = !runningStep && canRunPurchaseAutoStep;
+    const approvalEnabled = !runningStep && canSubmitApproval;
+    const invoiceEnabled = !runningStep && canMarkInvoice;
+
     return (
       <div style={{
-        marginTop: 12,
-        background: result.error ? '#3a1a1a' : '#0d1117',
+        marginTop: 16,
+        background: result.error ? '#3a1a1a' : '#161b22',
         border: `1px solid ${result.error ? '#f85149' : '#30363d'}`,
         borderRadius: 8,
-        padding: 12,
+        padding: 16,
         color: result.error ? '#f85149' : '#c9d1d9',
-        fontSize: 12,
+        fontSize: 13,
       }}>
         {result.error ? (
           <div>{result.error}</div>
         ) : (
           <div>
-            <div style={{ color: '#3fb950', fontWeight: 800, marginBottom: 8 }}>
-              {isPurchaseAutoDryRun ? '테스트모드 작업 생성 완료' : '구매 작업 생성 완료'}
-              {purchaseJobId && <span style={{ marginLeft: 8, fontFamily: 'monospace' }}>{purchaseJobId}</span>}
-            </div>
-            <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 10 }}>
-              {purchaseJob?.status && <Badge color="green">상태 {purchaseJob.status}</Badge>}
-              {purchaseJob?.order_no && <Badge color="blue">주문번호 {purchaseJob.order_no}</Badge>}
-              {isPurchaseAutoDryRun && <Badge color="yellow">테스트모드</Badge>}
-            </div>
-            {isPurchaseAutoDryRun && (
-              <div style={{ background: '#3a2e00', border: '1px solid #9e6a03', color: '#e3b341', borderRadius: 6, padding: 8, marginBottom: 10, lineHeight: 1.5 }}>
-                dry_run=True 상태라 실제 컴퓨존 주문/그룹웨어 품의 실행을 막았습니다.
+            <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'flex-start', flexWrap: 'wrap', marginBottom: 12 }}>
+              <div>
+                <div style={{ color: isPurchaseAutoDryRun ? '#e3b341' : '#3fb950', fontWeight: 900, fontSize: 15 }}>
+                  {isPurchaseAutoDryRun ? '테스트모드 구매 요청 생성 완료' : '구매 요청 생성 완료'}
+                </div>
+                {purchaseJobId && <div style={{ marginTop: 4, color: '#8b949e', fontFamily: 'monospace', fontSize: 12 }}>{purchaseJobId}</div>}
               </div>
-            )}
-            {purchaseJob?.approval_document_url && (
-              <a href={purchaseJob.approval_document_url} target="_blank" rel="noreferrer" style={{ display: 'inline-block', color: '#58a6ff', marginBottom: 10 }}>품의 문서 열기</a>
-            )}
-            <div style={{ display: 'grid', gap: 8 }}>
-              <button onClick={() => runPurchaseAutoStep('run-compuzone-order', '컴퓨존 주문/견적 실행')} disabled={!!runningStep || !canRunPurchaseAutoStep} style={{
-                background: runningStep || !canRunPurchaseAutoStep ? '#30363d' : '#1f6feb',
-                border: `1px solid ${runningStep || !canRunPurchaseAutoStep ? '#444c56' : '#58a6ff'}`,
-                color: '#fff', padding: '8px 10px', borderRadius: 6,
-                cursor: runningStep || !canRunPurchaseAutoStep ? 'not-allowed' : 'pointer', fontSize: 12, fontWeight: 700,
-              }}>{runningStep === 'run-compuzone-order' ? '주문 실행 중...' : '컴퓨존 주문/견적 실행'}</button>
-              <button onClick={() => runPurchaseAutoStep('submit-approval', '그룹웨어 품의 상신')} disabled={!!runningStep || !canSubmitApproval} style={{
-                background: runningStep || !canSubmitApproval ? '#30363d' : '#238636',
-                border: `1px solid ${runningStep || !canSubmitApproval ? '#444c56' : '#2ea043'}`,
-                color: '#fff', padding: '8px 10px', borderRadius: 6,
-                cursor: runningStep || !canSubmitApproval ? 'not-allowed' : 'pointer', fontSize: 12, fontWeight: 700,
-              }}>{runningStep === 'submit-approval' ? '품의 상신 중...' : '그룹웨어 품의 상신'}</button>
-              <button onClick={() => runPurchaseAutoStep('mark-tax-invoice-received', '세금계산서 수신 처리')} disabled={!!runningStep || !canMarkInvoice} style={{
-                background: runningStep || !canMarkInvoice ? '#30363d' : '#8957e5',
-                border: `1px solid ${runningStep || !canMarkInvoice ? '#444c56' : '#a371f7'}`,
-                color: '#fff', padding: '8px 10px', borderRadius: 6,
-                cursor: runningStep || !canMarkInvoice ? 'not-allowed' : 'pointer', fontSize: 12, fontWeight: 700,
-              }}>{runningStep === 'mark-tax-invoice-received' ? '처리 중...' : '세금계산서 수신 처리'}</button>
+              <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+                {purchaseJob?.status && <Badge color="green">상태 {purchaseJob.status}</Badge>}
+                {purchaseJob?.order_no && <Badge color="blue">주문번호 {purchaseJob.order_no}</Badge>}
+                {isPurchaseAutoDryRun && <Badge color="yellow">테스트모드</Badge>}
+              </div>
             </div>
+
+            {isPurchaseAutoDryRun ? (
+              <div style={{ background: '#3a2e00', border: '1px solid #9e6a03', color: '#e3b341', borderRadius: 6, padding: 10, lineHeight: 1.5 }}>
+                현재 구매 자동화 서버가 테스트모드라 실제 컴퓨존 주문과 그룹웨어 품의는 실행하지 않습니다. 실사용 전 서버에서 PURCHASE_AUTO_DRY_RUN=0으로 바꿔야 합니다.
+              </div>
+            ) : (
+              <>
+                {purchaseJob?.approval_document_url && (
+                  <a href={purchaseJob.approval_document_url} target="_blank" rel="noreferrer" style={{ display: 'inline-block', color: '#58a6ff', marginBottom: 12 }}>품의 문서 열기</a>
+                )}
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 8 }}>
+                  <button onClick={() => runPurchaseAutoStep('run-compuzone-order', '컴퓨존 주문/견적 실행')} disabled={!orderEnabled} style={actionButtonStyle(orderEnabled, '#1f6feb', '#58a6ff')}>
+                    {runningStep === 'run-compuzone-order' ? '주문 실행 중...' : '컴퓨존 주문/견적 실행'}
+                  </button>
+                  <button onClick={() => runPurchaseAutoStep('submit-approval', '그룹웨어 품의 상신')} disabled={!approvalEnabled} style={actionButtonStyle(approvalEnabled, '#238636', '#2ea043')}>
+                    {runningStep === 'submit-approval' ? '품의 상신 중...' : '그룹웨어 품의 상신'}
+                  </button>
+                  <button onClick={() => runPurchaseAutoStep('mark-tax-invoice-received', '세금계산서 수신 처리')} disabled={!invoiceEnabled} style={actionButtonStyle(invoiceEnabled, '#8957e5', '#a371f7')}>
+                    {runningStep === 'mark-tax-invoice-received' ? '처리 중...' : '세금계산서 수신 처리'}
+                  </button>
+                </div>
+              </>
+            )}
+
             {result.lastStep && (
               <div style={{
                 marginTop: 10,
                 color: result.lastStep.error ? '#f85149' : '#c9d1d9',
-                background: result.lastStep.error ? '#3a1a1a' : '#161b22',
+                background: result.lastStep.error ? '#3a1a1a' : '#0d1117',
                 border: `1px solid ${result.lastStep.error ? '#f85149' : '#30363d'}`,
                 borderRadius: 6,
-                padding: 8,
+                padding: 10,
               }}>
                 {result.lastStep.error || result.lastStep.message}
               </div>
@@ -4586,7 +4602,7 @@ function PurchaseCartPanel({ showMsg, currentUser }) {
 
               {(split.manual.length || split.blocked.length) > 0 && (
                 <div style={{ background: '#3a2e00', border: '1px solid #9e6a03', color: '#e3b341', borderRadius: 6, padding: 10, fontSize: 12, lineHeight: 1.5, marginBottom: 14 }}>
-                  컴퓨존 자동구매가 안 되는 항목이 포함되어 있습니다. 기본은 막아두고, 아래 옵션을 켜면 컴퓨존 상품만 먼저 구매 작업으로 넘깁니다.
+                  컴퓨존 자동구매가 안 되는 항목이 포함되어 있습니다. 기본은 막아두고, 아래 옵션을 켜면 컴퓨존 상품만 먼저 구매 요청으로 넘깁니다.
                 </div>
               )}
 
@@ -4614,7 +4630,7 @@ function PurchaseCartPanel({ showMsg, currentUser }) {
               <Field label="품의 제목 *">
                 <input value={approvalTitle} readOnly style={{ ...inputStyle, color: '#e6edf3', background: '#0d1117' }} />
               </Field>
-              <Field label="Purchase_Auto 주소 *">
+              <Field label="구매 자동화 서버 주소 *">
                 <input value={form.purchaseAutoUrl} onChange={e => setForm(f => ({ ...f, purchaseAutoUrl: e.target.value }))} style={inputStyle} />
               </Field>
               <Field label="요청자 *">
@@ -4625,17 +4641,17 @@ function PurchaseCartPanel({ showMsg, currentUser }) {
               </Field>
               <label style={{ display: 'flex', alignItems: 'center', gap: 8, color: '#c9d1d9', fontSize: 13, marginBottom: 14 }}>
                 <input type="checkbox" checked={form.allowPartial} onChange={e => setForm(f => ({ ...f, allowPartial: e.target.checked }))} style={{ accentColor: '#58a6ff' }} />
-                컴퓨존 상품만 먼저 구매 작업 생성
+                컴퓨존 상품만 먼저 요청 생성
               </label>
               <button onClick={checkout} disabled={saving || split.compuzone.length === 0} style={{
                 width: '100%', background: saving || split.compuzone.length === 0 ? '#30363d' : '#238636',
                 border: `1px solid ${saving || split.compuzone.length === 0 ? '#444c56' : '#2ea043'}`,
                 color: '#fff', padding: '10px 14px', borderRadius: 6,
                 cursor: saving || split.compuzone.length === 0 ? 'not-allowed' : 'pointer', fontSize: 14, fontWeight: 800,
-              }}>{saving ? '생성 중...' : 'Purchase_Auto 작업 생성'}</button>
-              {renderPurchaseActionPanel()}
+              }}>{saving ? '요청 생성 중...' : '구매 요청 생성'}</button>
             </div>
           </div>
+          {renderPurchaseActionPanel()}
 
         </>
       )}
