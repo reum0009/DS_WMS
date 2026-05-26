@@ -4160,6 +4160,8 @@ function PurchaseCartPanel({ showMsg, currentUser }) {
   const [purchaseModalOpen, setPurchaseModalOpen] = useState(false);
   const [soldOutDecision, setSoldOutDecision] = useState(null);
   const [workflowLog, setWorkflowLog] = useState([]);
+  const [diagnostics, setDiagnostics] = useState(null);
+  const [diagnosticsLoading, setDiagnosticsLoading] = useState(false);
   const [automationForm, setAutomationForm] = useState({
     compuzoneAccount: 'ds1500',
     groupwareLoginId: '',
@@ -4266,13 +4268,34 @@ function PurchaseCartPanel({ showMsg, currentUser }) {
 
   const appendWorkflowLog = (message, level = 'info') => {
     const at = new Date().toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
-    setWorkflowLog(current => [...current, { at, message, level }].slice(-8));
+    setWorkflowLog(current => [...current, { at, message, level }].slice(-20));
+  };
+
+  const loadDiagnostics = async ({ quiet = false } = {}) => {
+    setDiagnosticsLoading(true);
+    try {
+      const res = await purchaseCartAPI.diagnosticsLogs({ limit: 160 });
+      const data = res.data || {};
+      setDiagnostics(data);
+      if (!quiet) appendWorkflowLog('자동화 진단 로그를 불러왔습니다.', 'success');
+      return data;
+    } catch (e) {
+      const message = e.response?.data?.error || e.message || '자동화 진단 로그를 불러오지 못했습니다.';
+      if (!quiet) {
+        appendWorkflowLog(message, 'error');
+        showMsg(message, 'error');
+      }
+      return null;
+    } finally {
+      setDiagnosticsLoading(false);
+    }
   };
 
   const openPurchaseWorkflow = () => {
     setPurchaseModalOpen(true);
     setSoldOutDecision(null);
     setWorkflowLog([]);
+    setDiagnostics(null);
     if (!automationForm.groupwareLoginId && currentUser?.username) {
       setAutomationForm(f => ({ ...f, groupwareLoginId: currentUser.username }));
     }
@@ -4319,6 +4342,7 @@ function PurchaseCartPanel({ showMsg, currentUser }) {
       setResult({ error: message });
       appendWorkflowLog(message, 'error');
       showMsg(message, 'error');
+      loadDiagnostics({ quiet: true });
       throw e;
     } finally {
       setSaving(false);
@@ -4446,6 +4470,7 @@ function PurchaseCartPanel({ showMsg, currentUser }) {
       }
       appendWorkflowLog(message, 'error');
       showMsg(message, 'error');
+      loadDiagnostics({ quiet: true });
       setResult(current => ({
         ...(current || {}),
         lastStep: {
@@ -4473,6 +4498,7 @@ function PurchaseCartPanel({ showMsg, currentUser }) {
       const message = e.response?.data?.error || e.message || '품절 상품 제외 실패';
       appendWorkflowLog(message, 'error');
       showMsg(message, 'error');
+      loadDiagnostics({ quiet: true });
     } finally {
       setRunningStep('');
     }
@@ -4551,6 +4577,7 @@ function PurchaseCartPanel({ showMsg, currentUser }) {
       }));
       appendWorkflowLog(message, 'error');
       showMsg(message, 'error');
+      loadDiagnostics({ quiet: true });
     } finally {
       setRunningStep('');
     }
@@ -4660,6 +4687,68 @@ function PurchaseCartPanel({ showMsg, currentUser }) {
       </div>
     );
   };
+
+  const renderDiagnosticsPanel = () => {
+    if (!diagnostics) return null;
+    const renderLogLines = (lines = []) => (
+      <pre style={{
+        margin: 0,
+        maxHeight: 180,
+        overflow: 'auto',
+        whiteSpace: 'pre-wrap',
+        wordBreak: 'break-all',
+        background: '#0d1117',
+        border: '1px solid #30363d',
+        borderRadius: 6,
+        padding: 10,
+        color: '#c9d1d9',
+        fontSize: 11,
+        lineHeight: 1.45,
+      }}>{lines.length ? lines.join('\n') : '로그 없음'}</pre>
+    );
+
+    return (
+      <div style={{
+        marginTop: 12,
+        background: '#0d1117',
+        border: '1px solid #30363d',
+        borderRadius: 8,
+        padding: 12,
+        color: '#c9d1d9',
+        fontSize: 12,
+      }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, alignItems: 'center', marginBottom: 8 }}>
+          <div style={{ color: '#e6edf3', fontWeight: 900 }}>자동화 진단 로그</div>
+          <button onClick={() => loadDiagnostics()} disabled={diagnosticsLoading} style={{
+            background: '#21262d',
+            border: '1px solid #30363d',
+            color: '#c9d1d9',
+            padding: '5px 9px',
+            borderRadius: 5,
+            cursor: diagnosticsLoading ? 'not-allowed' : 'pointer',
+            fontSize: 12,
+          }}>{diagnosticsLoading ? '불러오는 중...' : '다시 불러오기'}</button>
+        </div>
+        <div style={{ color: '#8b949e', marginBottom: 8, lineHeight: 1.5 }}>
+          <div>API: {diagnostics.apiBaseUrl || '-'}</div>
+          <div>Health: {diagnostics.health ? JSON.stringify(diagnostics.health) : '-'}</div>
+          <div>Bridge log: {diagnostics.bridgeLogPath || '-'}</div>
+          <div>Process log: {diagnostics.processLogPath || '-'}</div>
+        </div>
+        <div style={{ display: 'grid', gap: 8 }}>
+          <div>
+            <div style={{ color: '#8b949e', marginBottom: 4 }}>WMS 브릿지 로그</div>
+            {renderLogLines(diagnostics.bridge)}
+          </div>
+          <div>
+            <div style={{ color: '#8b949e', marginBottom: 4 }}>Purchase_Auto 프로세스 로그</div>
+            {renderLogLines(diagnostics.process)}
+          </div>
+        </div>
+      </div>
+    );
+  };
+
   return (
     <div>
       <SectionHeader
@@ -4667,6 +4756,11 @@ function PurchaseCartPanel({ showMsg, currentUser }) {
         subtitle="카테고리에서 담은 품목을 컴퓨존 구매 작업으로 넘깁니다"
         action={cart.items?.length ? (
           <div style={{ display: 'flex', gap: 8 }}>
+            <button onClick={() => { setPurchaseModalOpen(true); loadDiagnostics(); }} disabled={diagnosticsLoading} style={{
+              background: '#21262d', border: '1px solid #30363d', color: '#c9d1d9',
+              padding: '8px 14px', borderRadius: 6, cursor: diagnosticsLoading ? 'not-allowed' : 'pointer',
+              opacity: diagnosticsLoading ? 0.65 : 1, fontSize: 13,
+            }}>{diagnosticsLoading ? '로그 확인 중...' : '자동화 로그'}</button>
             <button onClick={refreshCartImages} disabled={imageRefreshing} style={{
               background: '#1f6feb', border: '1px solid #58a6ff', color: '#fff',
               padding: '8px 14px', borderRadius: 6, cursor: imageRefreshing ? 'not-allowed' : 'pointer',
@@ -4839,6 +4933,7 @@ function PurchaseCartPanel({ showMsg, currentUser }) {
           </div>
           {renderSoldOutDecisionPanel()}
           {renderPurchaseActionPanel()}
+          {renderDiagnosticsPanel()}
         </Modal>
       )}
 

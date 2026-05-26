@@ -351,6 +351,7 @@ const purchaseCartAPI = {
   checkout: (data) => axios.post(`${API_BASE_URL}/purchase-cart/checkout`, data, { headers: getAuthHeader() }),
   runCompuzoneOrder: (jobId, data = {}) => axios.post(`${API_BASE_URL}/purchase-cart/jobs/${jobId}/run-compuzone-order`, data, { headers: getAuthHeader() }),
   submitApproval: (jobId, data = {}) => axios.post(`${API_BASE_URL}/purchase-cart/jobs/${jobId}/submit-approval`, data, { headers: getAuthHeader() }),
+  diagnosticsLogs: (params = {}) => axios.get(`${API_BASE_URL}/purchase-cart/diagnostics/logs`, { headers: getAuthHeader(), params }),
   refreshImages: (data = {}) => axios.post(`${API_BASE_URL}/purchase-cart/images/refresh`, data, { headers: getAuthHeader() }),
   refreshImage: (productId, data = {}) => axios.post(`${API_BASE_URL}/purchase-cart/products/${productId}/refresh-image`, data, { headers: getAuthHeader() }),
 };

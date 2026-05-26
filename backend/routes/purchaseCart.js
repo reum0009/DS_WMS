@@ -12,9 +12,74 @@ const PURCHASE_AUTO_START_TIMEOUT_MS = parseInt(process.env.PURCHASE_AUTO_START_
 const PURCHASE_AUTO_STEP_TIMEOUT_MS = parseInt(process.env.PURCHASE_AUTO_STEP_TIMEOUT_MS || '1800000', 10);
 const COMPUZONE_PRODUCT_BASE_URL = 'https://www.compuzone.co.kr/product/product_detail.htm?ProductNo=';
 const WRITE_ROLES = ['admin', 'dept_admin'];
+const PURCHASE_AUTO_LOG_DIR = process.env.PURCHASE_AUTO_BRIDGE_LOG_DIR
+  || path.join(__dirname, '..', 'logs');
+const PURCHASE_AUTO_BRIDGE_LOG = path.join(PURCHASE_AUTO_LOG_DIR, 'purchase-auto-bridge.log');
+const PURCHASE_AUTO_PROCESS_LOG = path.join(PURCHASE_AUTO_LOG_DIR, 'purchase-auto-process.log');
 
 let schemaReady = false;
 let purchaseAutoStartPromise = null;
+
+function ensurePurchaseAutoLogDir() {
+  fs.mkdirSync(PURCHASE_AUTO_LOG_DIR, { recursive: true });
+}
+
+function sanitizeForLog(value) {
+  if (Array.isArray(value)) return value.map(sanitizeForLog);
+  if (value && typeof value === 'object') {
+    const out = {};
+    for (const [key, item] of Object.entries(value)) {
+      if (/password|token|authorization|cookie|secret/i.test(key)) {
+        out[key] = '[redacted]';
+      } else {
+        out[key] = sanitizeForLog(item);
+      }
+    }
+    return out;
+  }
+  if (typeof value === 'string' && value.length > 1500) return `${value.slice(0, 1500)}...`;
+  return value;
+}
+
+function appendPurchaseAutoLog(event, details = {}) {
+  try {
+    ensurePurchaseAutoLogDir();
+    const line = JSON.stringify({
+      at: new Date().toISOString(),
+      event,
+      ...sanitizeForLog(details),
+    });
+    fs.appendFileSync(PURCHASE_AUTO_BRIDGE_LOG, `${line}\n`, 'utf8');
+  } catch (err) {
+    console.error('[Purchase_Auto bridge log failed]', err);
+  }
+}
+
+function readTail(filePath, maxBytes = 120000) {
+  try {
+    if (!fs.existsSync(filePath)) return '';
+    const stat = fs.statSync(filePath);
+    const start = Math.max(0, stat.size - maxBytes);
+    const fd = fs.openSync(filePath, 'r');
+    const buffer = Buffer.alloc(stat.size - start);
+    fs.readSync(fd, buffer, 0, buffer.length, start);
+    fs.closeSync(fd);
+    return buffer.toString('utf8');
+  } catch (err) {
+    return `log read failed: ${err.message}`;
+  }
+}
+
+function readPurchaseAutoLogs(limit = 200) {
+  const bridgeText = readTail(PURCHASE_AUTO_BRIDGE_LOG);
+  const bridgeLines = bridgeText.split(/\r?\n/).filter(Boolean).slice(-limit);
+  return {
+    bridgeLogPath: PURCHASE_AUTO_BRIDGE_LOG,
+    processLogPath: PURCHASE_AUTO_PROCESS_LOG,
+    bridge: bridgeLines,
+    process: readTail(PURCHASE_AUTO_PROCESS_LOG).split(/\r?\n/).filter(Boolean).slice(-limit),
+  };
+}
 
 function parsePositiveInt(value, fallback = null) {
   const n = parseInt(value, 10);
@@ -600,6 +665,8 @@ async function delay(ms) {
 async function purchaseAutoFetch(pathname, { method = 'GET', body = null, timeoutMs = 5000 } = {}) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
+  const startedAt = Date.now();
+  appendPurchaseAutoLog('request:start', { method, pathname, timeoutMs, body });
   try {
     const response = await fetch(`${PURCHASE_AUTO_API_BASE_URL}${pathname}`, {
       method,
@@ -608,7 +675,25 @@ async function purchaseAutoFetch(pathname, { method = 'GET', body = null, timeou
       signal: controller.signal,
     });
     const data = await response.json().catch(() => ({}));
+    appendPurchaseAutoLog('request:finish', {
+      method,
+      pathname,
+      status: response.status,
+      ok: response.ok,
+      elapsedMs: Date.now() - startedAt,
+      data,
+    });
     return { response, data };
+  } catch (err) {
+    appendPurchaseAutoLog('request:error', {
+      method,
+      pathname,
+      elapsedMs: Date.now() - startedAt,
+      error: err.message,
+      name: err.name,
+      stack: err.stack,
+    });
+    throw err;
   } finally {
     clearTimeout(timer);
   }
@@ -636,44 +721,90 @@ async function waitPurchaseAutoHealth() {
 function startPurchaseAutoProcess() {
   const projectDir = resolvePurchaseAutoProjectDir();
   if (!projectDir) {
+    appendPurchaseAutoLog('process:start-missing-project-dir', {
+      envProjectDir: process.env.PURCHASE_AUTO_PROJECT_DIR || '',
+    });
     throw new Error('Purchase_Auto 자동 실행 경로를 찾지 못했습니다. 서버에 Purchase_Auto를 설치하거나 PURCHASE_AUTO_PROJECT_DIR 환경변수를 설정하세요.');
   }
   const python = resolvePurchaseAutoPython();
   if (!python) {
+    appendPurchaseAutoLog('process:start-missing-python', {
+      envPython: process.env.PURCHASE_AUTO_PYTHON || '',
+      projectDir,
+    });
     throw new Error('Purchase_Auto 실행용 Python을 찾지 못했습니다. PURCHASE_AUTO_PYTHON 환경변수를 설정하세요.');
   }
 
   const args = python.toLowerCase() === 'py'
     ? ['-3', '-m', 'purchase_auto']
     : ['-m', 'purchase_auto'];
+  ensurePurchaseAutoLogDir();
+  const stdoutFd = fs.openSync(PURCHASE_AUTO_PROCESS_LOG, 'a');
+  const stderrFd = fs.openSync(PURCHASE_AUTO_PROCESS_LOG, 'a');
+  const allowExistingBrowserCdp = process.env.PURCHASE_AUTO_ALLOW_EXISTING_BROWSER_CDP === '1' ? '1' : '0';
+  const childEnv = {
+    ...process.env,
+    PURCHASE_AUTO_HOST: process.env.PURCHASE_AUTO_HOST || '127.0.0.1',
+    PURCHASE_AUTO_PORT: process.env.PURCHASE_AUTO_PORT || '5008',
+    PURCHASE_AUTO_DRY_RUN: process.env.PURCHASE_AUTO_DRY_RUN || '0',
+    PURCHASE_AUTO_ENABLE_LIVE_COMPUZONE_ORDER: process.env.PURCHASE_AUTO_ENABLE_LIVE_COMPUZONE_ORDER || '1',
+    PURCHASE_AUTO_ENABLE_LIVE_GROUPWARE_SUBMIT: process.env.PURCHASE_AUTO_ENABLE_LIVE_GROUPWARE_SUBMIT || '1',
+    PURCHASE_AUTO_ALLOW_EXISTING_BROWSER_CDP: allowExistingBrowserCdp,
+  };
+  if (allowExistingBrowserCdp !== '1') {
+    childEnv.PURCHASE_AUTO_COMPUZONE_CDP_URL = '';
+    childEnv.PURCHASE_AUTO_GROUPWARE_CDP_URL = '';
+  }
+  appendPurchaseAutoLog('process:start', {
+    python,
+    args,
+    projectDir,
+    apiBaseUrl: PURCHASE_AUTO_API_BASE_URL,
+    processLogPath: PURCHASE_AUTO_PROCESS_LOG,
+    env: {
+      PURCHASE_AUTO_HOST: childEnv.PURCHASE_AUTO_HOST,
+      PURCHASE_AUTO_PORT: childEnv.PURCHASE_AUTO_PORT,
+      PURCHASE_AUTO_DRY_RUN: childEnv.PURCHASE_AUTO_DRY_RUN,
+      PURCHASE_AUTO_ENABLE_LIVE_COMPUZONE_ORDER: childEnv.PURCHASE_AUTO_ENABLE_LIVE_COMPUZONE_ORDER,
+      PURCHASE_AUTO_ENABLE_LIVE_GROUPWARE_SUBMIT: childEnv.PURCHASE_AUTO_ENABLE_LIVE_GROUPWARE_SUBMIT,
+      PURCHASE_AUTO_ALLOW_EXISTING_BROWSER_CDP: childEnv.PURCHASE_AUTO_ALLOW_EXISTING_BROWSER_CDP,
+      PURCHASE_AUTO_COMPUZONE_CDP_URL: childEnv.PURCHASE_AUTO_COMPUZONE_CDP_URL,
+      PURCHASE_AUTO_GROUPWARE_CDP_URL: childEnv.PURCHASE_AUTO_GROUPWARE_CDP_URL,
+    },
+  });
   const child = spawn(python, args, {
     cwd: projectDir,
     detached: true,
-    stdio: 'ignore',
+    stdio: ['ignore', stdoutFd, stderrFd],
     windowsHide: true,
-    env: {
-      ...process.env,
-      PURCHASE_AUTO_HOST: process.env.PURCHASE_AUTO_HOST || '127.0.0.1',
-      PURCHASE_AUTO_PORT: process.env.PURCHASE_AUTO_PORT || '5008',
-      PURCHASE_AUTO_DRY_RUN: process.env.PURCHASE_AUTO_DRY_RUN || '0',
-      PURCHASE_AUTO_ENABLE_LIVE_COMPUZONE_ORDER: process.env.PURCHASE_AUTO_ENABLE_LIVE_COMPUZONE_ORDER || '1',
-      PURCHASE_AUTO_ENABLE_LIVE_GROUPWARE_SUBMIT: process.env.PURCHASE_AUTO_ENABLE_LIVE_GROUPWARE_SUBMIT || '1',
-    },
+    env: childEnv,
   });
+  child.on('error', (err) => {
+    appendPurchaseAutoLog('process:error', { error: err.message, stack: err.stack });
+  });
+  child.on('exit', (code, signal) => {
+    appendPurchaseAutoLog('process:exit', { pid: child.pid, code, signal });
+  });
+  appendPurchaseAutoLog('process:started', { pid: child.pid });
   child.unref();
 }
 
 async function ensurePurchaseAutoRunning() {
   const current = await checkPurchaseAutoHealth();
-  if (current?.ok) return current;
+  if (current?.ok) {
+    appendPurchaseAutoLog('health:already-running', current);
+    return current;
+  }
 
   if (!purchaseAutoStartPromise) {
     purchaseAutoStartPromise = (async () => {
       startPurchaseAutoProcess();
       const health = await waitPurchaseAutoHealth();
       if (!health?.ok) {
+        appendPurchaseAutoLog('health:start-timeout', { timeoutMs: PURCHASE_AUTO_START_TIMEOUT_MS });
         throw new Error('Purchase_Auto를 자동 실행했지만 health 응답을 받지 못했습니다.');
       }
+      appendPurchaseAutoLog('health:started', health);
       return health;
     })().finally(() => {
       purchaseAutoStartPromise = null;
@@ -687,6 +818,11 @@ async function purchaseAutoRequest(pathname, { method = 'GET', body = null, auto
     return await purchaseAutoFetch(pathname, { method, body, timeoutMs });
   } catch (error) {
     if (!autoStart) throw error;
+    appendPurchaseAutoLog('request:retry-after-autostart', {
+      method,
+      pathname,
+      error: error.message,
+    });
   }
 
   await ensurePurchaseAutoRunning();
@@ -769,6 +905,19 @@ async function resolveCompuzoneImage(productUrl) {
 }
 
 router.use(auth);
+
+router.get('/diagnostics/logs', roleAuth(WRITE_ROLES), async (req, res) => {
+  try {
+    const limit = Math.max(20, Math.min(parsePositiveInt(req.query.limit, 200), 500));
+    res.json({
+      apiBaseUrl: PURCHASE_AUTO_API_BASE_URL,
+      health: await purchaseAutoHealth(),
+      ...readPurchaseAutoLogs(limit),
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
 
 router.get('/catalog', roleAuth(WRITE_ROLES), async (req, res) => {
   try {
