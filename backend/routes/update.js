@@ -434,8 +434,10 @@ router.post('/create-package', auth, adminOnly, async (req, res) => {
 
   const run = (cmd, args, cwd) => new Promise((resolve, reject) => {
     const isWin = process.platform === 'win32';
-    // Windows에서 .cmd 파일은 shell: true 없이 spawn하면 EINVAL 발생
-    const child = spawn(cmd, args, { cwd, shell: isWin });
+    // Windows shell=true는 공백이 있는 경로를 git 인자로 넘길 때 쪼개므로,
+    // npm 계열처럼 .cmd 실행이 필요한 명령만 shell을 사용한다.
+    const needsShell = isWin && /^(npm|npx|yarn|pnpm)(\.cmd)?$/i.test(cmd);
+    const child = spawn(cmd, args, { cwd, shell: needsShell });
     let stdout = '';
     let stderr = '';
     child.stdout.on('data', d => {
