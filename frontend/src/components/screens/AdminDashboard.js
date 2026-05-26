@@ -4158,6 +4158,7 @@ function PurchaseCartPanel({ showMsg, currentUser }) {
   const [imagePreview, setImagePreview] = useState(null);
   const [result, setResult] = useState(null);
   const [purchaseModalOpen, setPurchaseModalOpen] = useState(false);
+  const [soldOutDecision, setSoldOutDecision] = useState(null);
   const [workflowLog, setWorkflowLog] = useState([]);
   const [automationForm, setAutomationForm] = useState({
     compuzoneAccount: 'ds1500',
@@ -4204,6 +4205,20 @@ function PurchaseCartPanel({ showMsg, currentUser }) {
     } catch (e) {
       showMsg(e.response?.data?.error || '삭제 실패', 'error');
     }
+  };
+
+  const productNoFromUrl = (url) => {
+    const match = String(url || '').match(/(?:ProductNo|product_no|productNo)=([0-9]+)/);
+    return match ? match[1] : '';
+  };
+
+  const findCartItemsByCompuzoneError = (error) => {
+    const productNo = String(error?.product_no || '').trim();
+    const productUrl = String(error?.product_url || '').trim();
+    return (cart.items || []).filter(item => {
+      const sourceUrl = item.product?.source?.productUrl || '';
+      return (productNo && productNoFromUrl(sourceUrl) === productNo) || (productUrl && sourceUrl === productUrl);
+    });
   };
 
   const clearCart = async () => {
@@ -4256,6 +4271,7 @@ function PurchaseCartPanel({ showMsg, currentUser }) {
 
   const openPurchaseWorkflow = () => {
     setPurchaseModalOpen(true);
+    setSoldOutDecision(null);
     setWorkflowLog([]);
     if (!automationForm.groupwareLoginId && currentUser?.username) {
       setAutomationForm(f => ({ ...f, groupwareLoginId: currentUser.username }));
@@ -4284,6 +4300,7 @@ function PurchaseCartPanel({ showMsg, currentUser }) {
 
     setSaving(true);
     setResult(null);
+    setSoldOutDecision(null);
     appendWorkflowLog('Purchase_Auto 자동 실행 및 연결 확인 중');
     try {
       const res = await purchaseCartAPI.checkout(purchaseCheckoutPayload());
@@ -4352,6 +4369,115 @@ function PurchaseCartPanel({ showMsg, currentUser }) {
   const purchaseJobId = purchaseJob?.job_id;
   const isPurchaseAutoDryRun = result?.purchaseAutoHealth?.dry_run === true;
 
+  const removeSoldOutCartItems = async () => {
+    const targets = soldOutDecision?.items?.length
+      ? soldOutDecision.items
+      : findCartItemsByCompuzoneError(soldOutDecision);
+    if (!targets.length) {
+      throw new Error('품절 상품을 장바구니에서 찾지 못했습니다. 새로고침 후 다시 확인하세요.');
+    }
+
+    let nextCart = cart;
+    for (const item of targets) {
+      const res = await purchaseCartAPI.removeItem(item.cartItemId);
+      nextCart = res.data;
+    }
+    setCart(nextCart);
+    return { nextCart, targets };
+  };
+
+  const hasPurchasableCompuzoneItem = (items = []) => items.some(item => {
+    const source = item.product?.source || {};
+    return source.type === 'compuzone' && source.productUrl && source.isPurchasable;
+  });
+
+  const continueWithoutSoldOut = async () => {
+    setRunningStep('sold-out-continue');
+    try {
+      const { nextCart, targets } = await removeSoldOutCartItems();
+      const removedNames = targets.map(item => item.product?.productName || item.product?.source?.productNo || '품절 상품').join(', ');
+      setSoldOutDecision(null);
+      setResult(null);
+      appendWorkflowLog(`품절 상품 제외: ${removedNames}`, 'success');
+      showMsg(`품절 상품을 제외했습니다: ${removedNames}`);
+
+      if (!hasPurchasableCompuzoneItem(nextCart.items || [])) {
+        const message = '품절 상품을 제외하면 구매 가능한 컴퓨존 상품이 없습니다.';
+        appendWorkflowLog(message, 'error');
+        showMsg(message, 'error');
+        return;
+      }
+
+      appendWorkflowLog('품절 제외 후 구매 요청을 새로 생성합니다.');
+      const checkout = await purchaseCartAPI.checkout(purchaseCheckoutPayload());
+      const checkoutData = checkout.data || {};
+      const job = checkoutData.purchaseJob?.job || checkoutData.purchaseJob;
+      if (!job?.job_id) throw new Error('품절 제외 후 새 구매 작업 ID를 받지 못했습니다.');
+      setResult({
+        purchaseJob: checkoutData.purchaseJob,
+        payload: checkoutData.payload,
+        split: checkoutData.split || null,
+        purchaseAutoHealth: checkoutData.purchaseAutoHealth || null,
+      });
+      appendWorkflowLog('품절 제외 후 구매 요청 생성 완료', 'success');
+
+      appendWorkflowLog('컴퓨존 주문/견적 실행 시작');
+      const response = await purchaseCartAPI.runCompuzoneOrder(job.job_id, { compuzoneAccount: automationForm.compuzoneAccount });
+      const data = response.data || {};
+      const nextJob = data?.job || data;
+      setResult(current => ({
+        ...(current || {}),
+        purchaseJob: nextJob,
+        purchaseAutoHealth: data.purchaseAutoHealth || current?.purchaseAutoHealth || null,
+        lastStep: {
+          step: 'run-compuzone-order',
+          label: '컴퓨존 주문/견적 실행',
+          message: data?.message || '컴퓨존 주문/견적 실행 완료',
+        },
+      }));
+      appendWorkflowLog(data?.message || '컴퓨존 주문/견적 실행 완료', 'success');
+      showMsg('품절 상품을 제외하고 나머지 구매를 진행했습니다');
+    } catch (e) {
+      const detail = e.response?.data?.purchaseAutoError;
+      const message = detail?.message || e.response?.data?.error || e.message || '품절 상품 제외 후 구매 진행 실패';
+      if (detail?.code === 'SOLD_OUT_PRODUCT') {
+        const items = findCartItemsByCompuzoneError(detail);
+        setSoldOutDecision({ ...detail, items });
+      }
+      appendWorkflowLog(message, 'error');
+      showMsg(message, 'error');
+      setResult(current => ({
+        ...(current || {}),
+        lastStep: {
+          step: 'run-compuzone-order',
+          label: '컴퓨존 주문/견적 실행',
+          error: message,
+        },
+      }));
+    } finally {
+      setRunningStep('');
+    }
+  };
+
+  const replaceSoldOutProduct = async () => {
+    setRunningStep('sold-out-replace');
+    try {
+      const { targets } = await removeSoldOutCartItems();
+      const removedNames = targets.map(item => item.product?.productName || item.product?.source?.productNo || '품절 상품').join(', ');
+      setSoldOutDecision(null);
+      setResult(null);
+      setPurchaseModalOpen(false);
+      appendWorkflowLog(`품절 상품 제외: ${removedNames}`, 'success');
+      showMsg(`품절 상품을 제외했습니다. 카테고리 관리에서 대체상품을 장바구니에 추가하세요: ${removedNames}`);
+    } catch (e) {
+      const message = e.response?.data?.error || e.message || '품절 상품 제외 실패';
+      appendWorkflowLog(message, 'error');
+      showMsg(message, 'error');
+    } finally {
+      setRunningStep('');
+    }
+  };
+
   const runPurchaseAutoStep = async (step, label) => {
     let activeJob = purchaseJob;
     if (step === 'run-compuzone-order' && !activeJob?.job_id) {
@@ -4385,6 +4511,7 @@ function PurchaseCartPanel({ showMsg, currentUser }) {
     }
 
     setRunningStep(step);
+    if (step === 'run-compuzone-order') setSoldOutDecision(null);
     appendWorkflowLog(`${label} 시작`);
     try {
       const response = step === 'run-compuzone-order'
@@ -4408,7 +4535,12 @@ function PurchaseCartPanel({ showMsg, currentUser }) {
       appendWorkflowLog(data?.message || `${label} 완료`, 'success');
       showMsg(data?.message || `${label} 완료`);
     } catch (e) {
-      const message = e.response?.data?.error || e?.message || `${label} 실패`;
+      const detail = e.response?.data?.purchaseAutoError;
+      const message = detail?.message || e.response?.data?.error || e?.message || `${label} 실패`;
+      if (step === 'run-compuzone-order' && detail?.code === 'SOLD_OUT_PRODUCT') {
+        const items = findCartItemsByCompuzoneError(detail);
+        setSoldOutDecision({ ...detail, items });
+      }
       setResult(current => ({
         ...(current || {}),
         lastStep: {
@@ -4422,6 +4554,46 @@ function PurchaseCartPanel({ showMsg, currentUser }) {
     } finally {
       setRunningStep('');
     }
+  };
+
+  const renderSoldOutDecisionPanel = () => {
+    if (!soldOutDecision) return null;
+    const targets = soldOutDecision.items || [];
+    const productLabel = targets.length
+      ? targets.map(item => item.product?.productName || item.product?.source?.productNo || '품절 상품').join(', ')
+      : soldOutDecision.product_no || '품절 상품';
+
+    return (
+      <div style={{
+        marginTop: 12,
+        background: '#3a2e00',
+        border: '1px solid #d29922',
+        borderRadius: 8,
+        padding: 12,
+        color: '#e3b341',
+        fontSize: 13,
+        lineHeight: 1.5,
+      }}>
+        <div style={{ color: '#ffd33d', fontWeight: 900, marginBottom: 6 }}>품절 상품 확인 필요</div>
+        <div style={{ marginBottom: 10 }}>
+          {productLabel} 상품이 컴퓨존에서 품절입니다. 이 상품을 장바구니에서 제외한 뒤 어떻게 진행할지 선택하세요.
+        </div>
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
+          <button onClick={continueWithoutSoldOut} disabled={!!runningStep} style={{
+            background: runningStep ? '#30363d' : '#1f6feb',
+            border: `1px solid ${runningStep ? '#444c56' : '#58a6ff'}`,
+            color: '#fff', padding: '9px 12px', borderRadius: 6,
+            cursor: runningStep ? 'not-allowed' : 'pointer', fontWeight: 800,
+          }}>제외하고 나머지 구매</button>
+          <button onClick={replaceSoldOutProduct} disabled={!!runningStep} style={{
+            background: runningStep ? '#30363d' : '#8250df',
+            border: `1px solid ${runningStep ? '#444c56' : '#a371f7'}`,
+            color: '#fff', padding: '9px 12px', borderRadius: 6,
+            cursor: runningStep ? 'not-allowed' : 'pointer', fontWeight: 800,
+          }}>제외하고 대체상품 추가</button>
+        </div>
+      </div>
+    );
   };
 
   const renderPurchaseActionPanel = () => {
@@ -4652,11 +4824,11 @@ function PurchaseCartPanel({ showMsg, currentUser }) {
             </Field>
           </div>
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, marginTop: 4 }}>
-            <button onClick={() => runPurchaseAutoStep('run-compuzone-order', '컴퓨존 주문/견적 실행')} disabled={!!runningStep || saving || split.compuzone.length === 0} style={{
-              background: runningStep || saving || split.compuzone.length === 0 ? '#30363d' : '#1f6feb',
-              border: `1px solid ${runningStep || saving || split.compuzone.length === 0 ? '#444c56' : '#58a6ff'}`,
+            <button onClick={() => runPurchaseAutoStep('run-compuzone-order', '컴퓨존 주문/견적 실행')} disabled={!!runningStep || saving || !!soldOutDecision || split.compuzone.length === 0} style={{
+              background: runningStep || saving || soldOutDecision || split.compuzone.length === 0 ? '#30363d' : '#1f6feb',
+              border: `1px solid ${runningStep || saving || soldOutDecision || split.compuzone.length === 0 ? '#444c56' : '#58a6ff'}`,
               color: '#fff', padding: '10px 14px', borderRadius: 6,
-              cursor: runningStep || saving || split.compuzone.length === 0 ? 'not-allowed' : 'pointer', fontSize: 14, fontWeight: 800,
+              cursor: runningStep || saving || soldOutDecision || split.compuzone.length === 0 ? 'not-allowed' : 'pointer', fontSize: 14, fontWeight: 800,
             }}>{runningStep === 'run-compuzone-order' || saving ? '주문/견적 진행 중...' : '컴퓨존 주문/견적 실행'}</button>
             <button onClick={() => runPurchaseAutoStep('submit-approval', '그룹웨어 품의 상신')} disabled={!!runningStep || !purchaseJob?.order_no || !purchaseJob?.quote_pdf_path} style={{
               background: runningStep || !purchaseJob?.order_no || !purchaseJob?.quote_pdf_path ? '#30363d' : '#238636',
@@ -4665,6 +4837,7 @@ function PurchaseCartPanel({ showMsg, currentUser }) {
               cursor: runningStep || !purchaseJob?.order_no || !purchaseJob?.quote_pdf_path ? 'not-allowed' : 'pointer', fontSize: 14, fontWeight: 800,
             }}>{runningStep === 'submit-approval' ? '품의 상신 중...' : '그룹웨어 품의 상신'}</button>
           </div>
+          {renderSoldOutDecisionPanel()}
           {renderPurchaseActionPanel()}
         </Modal>
       )}

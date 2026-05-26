@@ -701,6 +701,17 @@ function purchaseAutoError(data, fallback) {
   return data?.detail || data?.error || fallback;
 }
 
+function purchaseAutoErrorDetail(data, fallback) {
+  const detail = purchaseAutoError(data, fallback);
+  if (detail && typeof detail === 'object') {
+    return {
+      ...detail,
+      message: detail.message || fallback,
+    };
+  }
+  return { message: String(detail || fallback) };
+}
+
 function selectedCompuzoneAccount(value) {
   const account = String(value || '').trim();
   if (['ds1500', 'reum0009'].includes(account)) return account;
@@ -953,8 +964,10 @@ router.post('/jobs/:jobId/run-compuzone-order', roleAuth(WRITE_ROLES), async (re
       timeoutMs: PURCHASE_AUTO_STEP_TIMEOUT_MS,
     });
     if (!response.ok) {
+      const detail = purchaseAutoErrorDetail(data, '컴퓨존 주문/견적 실행에 실패했습니다.');
       return res.status(response.status).json({
-        error: purchaseAutoError(data, '컴퓨존 주문/견적 실행에 실패했습니다.'),
+        error: detail.message,
+        purchaseAutoError: detail,
         purchaseAutoStatus: response.status,
       });
     }
