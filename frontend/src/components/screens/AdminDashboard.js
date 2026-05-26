@@ -3,7 +3,7 @@ import {
   usersAPI, warehousesAPI, productsAPI,
   categoriesAPI, suppliersAPI, stockHistoryAPI, invitationsAPI,
   gwMappingAPI,
-  dbConfigAPI, noticesAPI,
+  dbConfigAPI, noticesAPI, purchaseCartAPI,
 } from '../../api/api';
 
 // ── 단위 목록 ─────────────────────────────────────────────────────
@@ -166,6 +166,7 @@ export default function AdminDashboard({ user, onLogout }) {
       case 'notices':    return <NoticesPanel    showMsg={showMsg} />;
       case 'items':      return <ItemsPanel       showMsg={showMsg} />;
       case 'categories': return <CategoriesPanel  showMsg={showMsg} currentUser={user} />;
+      case 'purchaseCart': return <PurchaseCartPanel showMsg={showMsg} currentUser={user} />;
       case 'warehouses': return <WarehousesPanel  showMsg={showMsg} currentUser={user} />;
       case 'policy':     return <PolicyPanel      showMsg={showMsg} />;
       case 'suppliers':  return <SuppliersPanel   showMsg={showMsg} />;
@@ -271,6 +272,7 @@ const MENUS = [
   { id: 'notices',    icon: '!', label: '공지사항 관리' },
   { id: 'items',      icon: '▦', label: '품목 관리' },
   { id: 'categories', icon: '≡', label: '카테고리 관리' },
+  { id: 'purchaseCart', icon: '▣', label: '장바구니' },
   { id: 'warehouses', icon: '⌂', label: '창고 관리' },
   { id: 'policy',     icon: '⚙', label: '재고 정책' },
   { id: 'suppliers',  icon: '◑', label: '공급업체 관리' },
@@ -1704,8 +1706,133 @@ function ItemsPanel({ showMsg }) {
 // ─────────────────────────────────────────────────────────────────
 const LEVEL_LABEL = ['', '부서(L1)', '분류(L2)', '대분류(L3)', '중분류(L4)', '소분류(L5)'];
 
+const formatWon = (value) => `${Number(value || 0).toLocaleString()}원`;
+const sourceLabel = (source) => {
+  const type = source?.type || 'manual';
+  if (type === 'compuzone') return '컴퓨존';
+  if (type === 'external') return '외부';
+  return '수동';
+};
+const sourceBadgeColor = (source) => {
+  const type = source?.type || 'manual';
+  if (type === 'compuzone') return 'blue';
+  if (type === 'external') return 'purple';
+  return 'gray';
+};
+const productImageUrl = (product) => product?.source?.thumbnailUrl || product?.source?.imageUrl || '';
+const productLabel = (product) => [product?.productName, product?.specification].filter(Boolean).join(' / ');
+
+const PURCHASE_COMPANIES = [
+  {
+    value: '대승',
+    label: '대승',
+    businessNumbers: [
+      { label: 'D1공장', value: '125-81-05619' },
+      { label: 'D2공장', value: '403-85-07607' },
+      { label: 'D3공장', value: '403-85-23311' },
+    ],
+  },
+  {
+    value: '대승정밀',
+    label: '대승정밀',
+    businessNumbers: [
+      { label: 'P1공장', value: '125-81-32697' },
+      { label: 'P3공장', value: '403-85-15640' },
+      { label: 'P4공장', value: '844-85-00770' },
+      { label: 'P2공장', value: '118-85-07029' },
+    ],
+  },
+  {
+    value: '일강',
+    label: '일강',
+    businessNumbers: [
+      { label: '일강 1공장', value: '125-81-51622' },
+      { label: '일강 2공장', value: '403-85-20895' },
+    ],
+  },
+];
+
+const PURCHASE_DELIVERIES = [
+  {
+    key: 'gimje-it',
+    label: '김제 전산팀',
+    factory: 'P3공장',
+    defaultCorp: '대승정밀',
+    defaultBusinessNumber: '403-85-15640',
+    businessContactName: '윤기옥',
+    keywords: ['김제 전산팀', '지평선산단4길 89', '010-8025-2861'],
+  },
+  {
+    key: 'pyeongtaek-it',
+    label: '평택 전산팀',
+    factory: 'D1공장',
+    defaultCorp: '대승',
+    defaultBusinessNumber: '125-81-05619',
+    businessContactName: '윤기옥',
+    keywords: ['평택 전산팀', '수월암4길 200', '010-2227-0009'],
+  },
+];
+
+const purchaseCompany = (value) => PURCHASE_COMPANIES.find(c => c.value === value) || PURCHASE_COMPANIES[0];
+const purchaseDelivery = (key) => PURCHASE_DELIVERIES.find(d => d.key === key) || PURCHASE_DELIVERIES[0];
+
+const purchaseDocumentCategory = (product) => {
+  const text = [product?.productName, product?.specification, product?.productCode].filter(Boolean).join(' ').toLowerCase();
+  if (['가방', '케이블', '젠더', '더미', '플러그', '마우스', '키보드', '동글', '허브'].some(v => text.includes(v))) return '소모품';
+  if (text.includes('office') || text.includes('windows') || text.includes('소프트웨어') || text.includes('라이선스')) return '컴퓨터소프트웨어';
+  if (['노트북', '아이디어패드', 'thinkpad', '갤럭시북', '그램', 'vivobook', 'zenbook', '데스크탑', '미니 pc', 'pc', '프린터', '복합기', '모니터'].some(v => text.includes(v))) return '집기비품';
+  return '소모품';
+};
+
+const purchaseDocumentLabel = (items) => {
+  const categories = (items || []).map(item => purchaseDocumentCategory(item.product || item));
+  if (categories.includes('집기비품')) return '집기비품';
+  if (categories.includes('컴퓨터소프트웨어')) return '컴퓨터소프트웨어';
+  return '소모품';
+};
+
+function ProductThumb({ product, onOpen }) {
+  const src = productImageUrl(product);
+  return (
+    <button
+      type="button"
+      onClick={() => src && onOpen && onOpen(product)}
+      title={src ? '이미지 크게 보기' : '이미지 없음'}
+      style={{
+        width: 54, height: 54, borderRadius: 6, border: '1px solid #30363d',
+        background: '#0d1117', color: '#8b949e', overflow: 'hidden',
+        display: 'flex', alignItems: 'center', justifyContent: 'center',
+        cursor: src ? 'zoom-in' : 'default', padding: 0, flexShrink: 0,
+      }}
+    >
+      {src ? (
+        <img src={src} alt="" style={{ width: '100%', height: '100%', objectFit: 'contain', display: 'block' }} />
+      ) : (
+        <span style={{ fontSize: 10, lineHeight: 1.3 }}>NO<br />IMG</span>
+      )}
+    </button>
+  );
+}
+
+function ImagePreviewModal({ product, onClose }) {
+  const src = productImageUrl(product);
+  if (!product || !src) return null;
+  return (
+    <Modal title={productLabel(product) || '상품 이미지'} onClose={onClose} width={760}>
+      <div style={{ background: '#0d1117', border: '1px solid #30363d', borderRadius: 8, padding: 16, textAlign: 'center' }}>
+        <img src={src} alt="" style={{ maxWidth: '100%', maxHeight: '70vh', objectFit: 'contain' }} />
+      </div>
+      {product.source?.productUrl && (
+        <div style={{ marginTop: 12, textAlign: 'right' }}>
+          <a href={product.source.productUrl} target="_blank" rel="noreferrer" style={{ color: '#58a6ff', fontSize: 13 }}>상품 페이지 열기</a>
+        </div>
+      )}
+    </Modal>
+  );
+}
+
 // 재귀 트리 노드
-function TreeNode({ node, depth = 0, onAdd, onEdit, onDelete, onMove,
+function TreeNode({ node, depth = 0, onAdd, onEdit, onDelete, onMove, onCart,
                     dragState, onDragStart, onDragEnter, onDragLeave, onDrop, onDragEnd,
                     closedIds, onToggle, canDropChild }) {
   const color = node.color || '#8b949e';
@@ -1815,6 +1942,10 @@ function TreeNode({ node, depth = 0, onAdd, onEdit, onDelete, onMove,
               padding: '2px 8px', borderRadius: 3, cursor: 'pointer', fontSize: 11,
             }}>이동</button>
           )}
+          <button onClick={() => onCart && onCart(node)} title="이 카테고리 품목을 장바구니에 담기" style={{
+            background: 'none', border: '1px solid #9e6a03', color: '#e3b341',
+            padding: '2px 8px', borderRadius: 3, cursor: 'pointer', fontSize: 11,
+          }}>담기</button>
           <button onClick={() => onEdit(node)} style={{
             background: 'none', border: '1px solid #30363d', color: '#8b949e',
             padding: '2px 8px', borderRadius: 3, cursor: 'pointer', fontSize: 11,
@@ -1836,7 +1967,7 @@ function TreeNode({ node, depth = 0, onAdd, onEdit, onDelete, onMove,
         <div style={{ borderLeft: `1px solid ${color}33`, marginLeft: 18, paddingLeft: 4 }}>
           {node.children.map(child => (
             <TreeNode key={child.id} node={child} depth={depth + 1}
-              onAdd={onAdd} onEdit={onEdit} onDelete={onDelete} onMove={onMove}
+              onAdd={onAdd} onEdit={onEdit} onDelete={onDelete} onMove={onMove} onCart={onCart}
               dragState={dragState} onDragStart={onDragStart}
               onDragEnter={onDragEnter} onDragLeave={onDragLeave} onDrop={onDrop} onDragEnd={onDragEnd}
               closedIds={closedIds} onToggle={onToggle} canDropChild={canDropChild} />
@@ -1860,6 +1991,10 @@ function CategoriesPanel({ showMsg, currentUser }) {
   const [saving,       setSaving]       = useState(false);
   // 이동 모달: { node, candidates: [{id,name,path}], selectedId }
   const [moveModal,    setMoveModal]    = useState(null);
+  const [purchaseModal, setPurchaseModal] = useState(null);
+  const [imagePreview, setImagePreview] = useState(null);
+  const [allImageRefreshing, setAllImageRefreshing] = useState(false);
+  const [bulkImageRefreshing, setBulkImageRefreshing] = useState(false);
   // 드래그 상태: { dragId, dragLevel, dragParentId, overId }
   const [dragState,    setDragState]    = useState(null);
   // 접힌 노드 ID Set — 없으면 기본 펼침
@@ -1996,6 +2131,106 @@ function CategoriesPanel({ showMsg, currentUser }) {
       canMoveUnderParent(node, c)
     );
     setMoveModal({ node, candidates, selectedId: candidates[0]?.id || '' });
+  };
+
+  const openPurchasePicker = async (node) => {
+    setPurchaseModal({ node, loading: true, products: [], selected: {}, quantities: {} });
+    try {
+      const res = await purchaseCartAPI.getCatalog({ categoryId: node.id, includeDescendants: 1 });
+      const products = res.data?.products || [];
+      if (products.length === 0) {
+        setPurchaseModal(null);
+        showMsg('이 카테고리에 장바구니에 담을 품목이 없습니다', 'error');
+        return;
+      }
+      const selected = {};
+      const quantities = {};
+      products.forEach((p, idx) => {
+        selected[p.id] = products.length === 1 || idx === 0;
+        quantities[p.id] = 1;
+      });
+      setPurchaseModal({ node, loading: false, products, selected, quantities });
+    } catch (e) {
+      setPurchaseModal(null);
+      showMsg(e.response?.data?.error || '구매 품목 로드 실패', 'error');
+    }
+  };
+
+  const setPurchaseSelected = (productId, checked) => {
+    setPurchaseModal(m => m ? ({ ...m, selected: { ...m.selected, [productId]: checked } }) : m);
+  };
+
+  const setPurchaseQuantity = (productId, value) => {
+    const quantity = Math.max(1, parseInt(value, 10) || 1);
+    setPurchaseModal(m => m ? ({ ...m, quantities: { ...m.quantities, [productId]: quantity } }) : m);
+  };
+
+  const refreshPurchaseImage = async (product) => {
+    try {
+      await purchaseCartAPI.refreshImage(product.id, { sourceId: product.source?.id || undefined });
+      const res = await purchaseCartAPI.getCatalog({ categoryId: purchaseModal.node.id, includeDescendants: 1 });
+      const products = res.data?.products || [];
+      setPurchaseModal(m => m ? ({ ...m, products }) : m);
+      showMsg('이미지 갱신 완료');
+    } catch (e) {
+      showMsg(e.response?.data?.error || '이미지 갱신 실패', 'error');
+    }
+  };
+
+  const refreshPurchaseImages = async () => {
+    if (!purchaseModal?.products?.length) return;
+    const sourceIds = purchaseModal.products
+      .map(p => p.source?.id)
+      .filter(Boolean);
+    if (sourceIds.length === 0) return showMsg('갱신할 컴퓨존 상품 URL이 없습니다', 'error');
+
+    setBulkImageRefreshing(true);
+    try {
+      const res = await purchaseCartAPI.refreshImages({
+        sourceIds,
+        limit: sourceIds.length,
+      });
+      const catalog = await purchaseCartAPI.getCatalog({ categoryId: purchaseModal.node.id, includeDescendants: 1 });
+      setPurchaseModal(m => m ? ({ ...m, products: catalog.data?.products || [] }) : m);
+      const data = res.data || {};
+      showMsg(`이미지 전체 갱신 완료: 성공 ${data.updated || 0}건, 실패 ${data.failed || 0}건`);
+    } catch (e) {
+      showMsg(e.response?.data?.error || '이미지 전체 갱신 실패', 'error');
+    } finally {
+      setBulkImageRefreshing(false);
+    }
+  };
+
+  const refreshAllPurchaseImages = async () => {
+    setAllImageRefreshing(true);
+    try {
+      const res = await purchaseCartAPI.refreshImages({ limit: 1000 });
+      const data = res.data || {};
+      showMsg(`컴퓨존 이미지 전체 갱신 완료: 성공 ${data.updated || 0}건, 실패 ${data.failed || 0}건`);
+    } catch (e) {
+      showMsg(e.response?.data?.error || '컴퓨존 이미지 전체 갱신 실패', 'error');
+    } finally {
+      setAllImageRefreshing(false);
+    }
+  };
+
+  const addSelectedToCart = async () => {
+    if (!purchaseModal) return;
+    const selectedProducts = (purchaseModal.products || []).filter(p => purchaseModal.selected?.[p.id]);
+    if (selectedProducts.length === 0) return showMsg('담을 품목을 선택하세요', 'error');
+    try {
+      for (const product of selectedProducts) {
+        await purchaseCartAPI.addItem({
+          productId: product.id,
+          sourceId: product.source?.id || undefined,
+          quantity: purchaseModal.quantities?.[product.id] || 1,
+        });
+      }
+      showMsg(`${selectedProducts.length}개 품목을 장바구니에 담았습니다`);
+      setPurchaseModal(null);
+    } catch (e) {
+      showMsg(e.response?.data?.error || '장바구니 담기 실패', 'error');
+    }
   };
 
   const handleMoveConfirm = async () => {
@@ -2148,7 +2383,8 @@ function CategoriesPanel({ showMsg, currentUser }) {
       let n = flatAll.find(x => x.id === id);
       while (n) {
         if (n.level === 1) return n;
-        n = n.parentId ? flatAll.find(x => x.id === n.parentId) : null;
+        const parentId = n.parentId;
+        n = parentId ? flatAll.find(x => x.id === parentId) : null;
       }
       return null;
     };
@@ -2162,7 +2398,28 @@ function CategoriesPanel({ showMsg, currentUser }) {
     <div>
       <SectionHeader title="카테고리 관리"
         subtitle="5단계 계층: 부서(L1) › 분류(L2) › 대분류(L3) › 중분류(L4) › 소분류(L5)"
-        action={view === 'active' ? <AddBtn onClick={openAddDept} label="+ 부서 추가" /> : null} />
+        action={view === 'active' ? (
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+            <button
+              onClick={refreshAllPurchaseImages}
+              disabled={allImageRefreshing}
+              style={{
+                background: '#1f6feb',
+                border: '1px solid #58a6ff',
+                color: '#fff',
+                padding: '8px 14px',
+                borderRadius: 6,
+                cursor: allImageRefreshing ? 'not-allowed' : 'pointer',
+                opacity: allImageRefreshing ? 0.65 : 1,
+                fontSize: 13,
+                fontWeight: 700,
+              }}
+            >
+              {allImageRefreshing ? '전체 갱신 중...' : '컴퓨존 이미지 전체 갱신'}
+            </button>
+            <AddBtn onClick={openAddDept} label="+ 부서 추가" />
+          </div>
+        ) : null} />
 
       {/* ── 활성 / 비활성 탭 ── */}
       <div style={{ display: 'flex', gap: 0, marginBottom: 16, borderBottom: '1px solid #21262d' }}>
@@ -2199,6 +2456,7 @@ function CategoriesPanel({ showMsg, currentUser }) {
             tree.map(dept => (
               <div key={dept.id} style={{ marginBottom: 12, borderBottom: '1px solid #21262d', paddingBottom: 12 }}>
                 <TreeNode node={dept} depth={0} onAdd={openAdd} onEdit={openEdit} onDelete={openDelete} onMove={openMove}
+                  onCart={openPurchasePicker}
                   dragState={dragState} onDragStart={handleDragStart}
                   onDragEnter={handleDragEnter} onDragLeave={handleDragLeave} onDrop={handleDrop} onDragEnd={handleDragEnd}
                   closedIds={closedIds} onToggle={handleToggle} canDropChild={canDropChild} />
@@ -2349,6 +2607,115 @@ function CategoriesPanel({ showMsg, currentUser }) {
         </Modal>
       )}
 
+      {purchaseModal && (
+        <Modal title={`장바구니 담기 — ${purchaseModal.node?.name || ''}`} onClose={() => setPurchaseModal(null)} width={900}>
+          {purchaseModal.loading ? (
+            <div style={{ color: '#8b949e', padding: 32, textAlign: 'center' }}>품목을 불러오는 중...</div>
+          ) : (
+            <>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12, gap: 12 }}>
+                <div style={{ color: '#8b949e', fontSize: 12 }}>
+                  {purchaseModal.products.length === 1
+                    ? '수량을 정해서 장바구니에 담습니다.'
+                    : '여러 품목 중 구매할 항목과 수량을 선택하세요.'}
+                </div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <button
+                    onClick={refreshPurchaseImages}
+                    disabled={bulkImageRefreshing}
+                    style={{
+                      background: '#1f6feb',
+                      border: '1px solid #58a6ff',
+                      color: '#fff',
+                      padding: '6px 10px',
+                      borderRadius: 6,
+                      cursor: bulkImageRefreshing ? 'not-allowed' : 'pointer',
+                      opacity: bulkImageRefreshing ? 0.65 : 1,
+                      fontSize: 12,
+                      fontWeight: 700,
+                    }}
+                  >
+                    {bulkImageRefreshing ? '이미지 갱신 중...' : '현재 목록 이미지 갱신'}
+                  </button>
+                  <Badge color="blue">{purchaseModal.products.length}개 품목</Badge>
+                </div>
+              </div>
+
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 8, maxHeight: '58vh', overflowY: 'auto', paddingRight: 4 }}>
+                {purchaseModal.products.map(product => {
+                  const selected = !!purchaseModal.selected?.[product.id];
+                  const source = product.source || {};
+                  return (
+                    <div key={product.id} style={{
+                      display: 'grid',
+                      gridTemplateColumns: '28px 58px minmax(220px, 1fr) 110px 86px 92px',
+                      gap: 10,
+                      alignItems: 'center',
+                      background: selected ? '#0d2044' : '#0d1117',
+                      border: `1px solid ${selected ? '#58a6ff' : '#30363d'}`,
+                      borderRadius: 8,
+                      padding: 10,
+                    }}>
+                      <input
+                        type="checkbox"
+                        checked={selected}
+                        onChange={e => setPurchaseSelected(product.id, e.target.checked)}
+                        style={{ accentColor: '#58a6ff' }}
+                      />
+                      <ProductThumb product={product} onOpen={setImagePreview} />
+                      <div style={{ minWidth: 0 }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap', marginBottom: 4 }}>
+                          <span style={{ color: '#e6edf3', fontSize: 13, fontWeight: 700 }}>{product.productName}</span>
+                          <Badge color={sourceBadgeColor(source)}>{sourceLabel(source)}</Badge>
+                          {source.sourceCount > 1 && <Badge color="yellow">구매처 {source.sourceCount}</Badge>}
+                        </div>
+                        <div style={{ color: '#8b949e', fontSize: 12, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                          {product.specification || product.productCode}
+                        </div>
+                        <div style={{ display: 'flex', gap: 10, marginTop: 5, fontSize: 11 }}>
+                          {source.productUrl ? (
+                            <a href={source.productUrl} target="_blank" rel="noreferrer" style={{ color: '#58a6ff' }}>상품 페이지</a>
+                          ) : (
+                            <span style={{ color: '#f0883e' }}>구매 URL 없음</span>
+                          )}
+                          <button onClick={() => refreshPurchaseImage(product)} style={{
+                            background: 'none', border: 'none', padding: 0, color: '#8b949e', cursor: 'pointer', fontSize: 11,
+                          }}>이미지 갱신</button>
+                        </div>
+                      </div>
+                      <div style={{ textAlign: 'right', color: '#e6edf3', fontSize: 13, fontWeight: 700 }}>
+                        {formatWon(product.unitPrice)}
+                      </div>
+                      <input
+                        type="number"
+                        min="1"
+                        value={purchaseModal.quantities?.[product.id] || 1}
+                        onChange={e => setPurchaseQuantity(product.id, e.target.value)}
+                        style={{ ...inputStyle, padding: '6px 8px', fontSize: 13, textAlign: 'right' }}
+                      />
+                      <div style={{ textAlign: 'right', color: '#8b949e', fontSize: 12 }}>
+                        재고 {Number(product.currentStock || 0).toLocaleString()}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+
+              <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 18 }}>
+                <button onClick={() => setPurchaseModal(null)} style={{
+                  background: 'none', border: '1px solid #30363d', color: '#8b949e',
+                  padding: '8px 18px', borderRadius: 6, cursor: 'pointer', fontSize: 13,
+                }}>취소</button>
+                <button onClick={addSelectedToCart} style={{
+                  background: '#238636', border: '1px solid #2ea043', color: '#fff',
+                  padding: '8px 18px', borderRadius: 6, cursor: 'pointer', fontSize: 13, fontWeight: 700,
+                }}>장바구니 담기</button>
+              </div>
+            </>
+          )}
+        </Modal>
+      )}
+
       {/* ── 이동 모달 ── */}
       {moveModal && (
         <Modal title={`"${moveModal.node.name}" 이동 — ${LEVEL_LABEL[moveModal.node.level]}`}
@@ -2403,6 +2770,7 @@ function CategoriesPanel({ showMsg, currentUser }) {
         </Modal>
       )}
 
+      <ImagePreviewModal product={imagePreview} onClose={() => setImagePreview(null)} />
       {confirmModal && <ConfirmModal {...confirmModal} onCancel={() => setConfirmModal(null)} />}
     </div>
   );
@@ -3777,6 +4145,799 @@ function DbConfigPanel({ showMsg }) {
       <div style={{ marginTop: 16, background: '#0d1117', border: '1px solid #21262d', borderRadius: 8, padding: 16, color: '#8b949e', fontSize: 12, lineHeight: 1.7 }}>
         저장한 설정은 <code style={{ color: '#c9d1d9' }}>backend/.env</code>에 반영됩니다. 이미 실행 중인 백엔드는 기존 DB 연결을 유지하므로 서비스 재실행 후 새 DB가 적용됩니다.
       </div>
+    </div>
+  );
+}
+
+function PurchaseCartPanel({ showMsg, currentUser }) {
+  const [cart, setCart] = useState({ items: [], totalQuantity: 0, totalAmount: 0 });
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [runningStep, setRunningStep] = useState('');
+  const [imageRefreshing, setImageRefreshing] = useState(false);
+  const [imagePreview, setImagePreview] = useState(null);
+  const [result, setResult] = useState(null);
+  const [purchaseModalOpen, setPurchaseModalOpen] = useState(false);
+  const [soldOutDecision, setSoldOutDecision] = useState(null);
+  const [workflowLog, setWorkflowLog] = useState([]);
+  const [diagnostics, setDiagnostics] = useState(null);
+  const [diagnosticsLoading, setDiagnosticsLoading] = useState(false);
+  const [automationForm, setAutomationForm] = useState({
+    compuzoneAccount: 'ds1500',
+    groupwareLoginId: '',
+    groupwareLoginPassword: '',
+  });
+  const [form, setForm] = useState({
+    corp: '대승정밀',
+    deliveryKey: 'gimje-it',
+    businessNumber: '403-85-15640',
+    requester: currentUser?.name || '',
+    memo: '',
+    allowPartial: false,
+  });
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    try {
+      const res = await purchaseCartAPI.getCart();
+      setCart(res.data || { items: [], totalQuantity: 0, totalAmount: 0 });
+    } catch (e) {
+      showMsg(e.response?.data?.error || '장바구니 로드 실패', 'error');
+    } finally {
+      setLoading(false);
+    }
+  }, [showMsg]);
+
+  useEffect(() => { load(); }, [load]);
+
+  const changeQty = async (item, quantity) => {
+    const nextQty = Math.max(0, parseInt(quantity, 10) || 0);
+    try {
+      const res = await purchaseCartAPI.updateItem(item.cartItemId, { quantity: nextQty });
+      setCart(res.data);
+    } catch (e) {
+      showMsg(e.response?.data?.error || '수량 변경 실패', 'error');
+    }
+  };
+
+  const removeItem = async (item) => {
+    try {
+      const res = await purchaseCartAPI.removeItem(item.cartItemId);
+      setCart(res.data);
+    } catch (e) {
+      showMsg(e.response?.data?.error || '삭제 실패', 'error');
+    }
+  };
+
+  const productNoFromUrl = (url) => {
+    const match = String(url || '').match(/(?:ProductNo|product_no|productNo)=([0-9]+)/);
+    return match ? match[1] : '';
+  };
+
+  const findCartItemsByCompuzoneError = (error) => {
+    const productNo = String(error?.product_no || '').trim();
+    const productUrl = String(error?.product_url || '').trim();
+    return (cart.items || []).filter(item => {
+      const sourceUrl = item.product?.source?.productUrl || '';
+      return (productNo && productNoFromUrl(sourceUrl) === productNo) || (productUrl && sourceUrl === productUrl);
+    });
+  };
+
+  const clearCart = async () => {
+    try {
+      const res = await purchaseCartAPI.clear();
+      setCart(res.data);
+      setResult(null);
+      showMsg('장바구니를 비웠습니다');
+    } catch (e) {
+      showMsg(e.response?.data?.error || '장바구니 비우기 실패', 'error');
+    }
+  };
+
+  const refreshImage = async (item) => {
+    try {
+      await purchaseCartAPI.refreshImage(item.product.id, { sourceId: item.product.source?.id || undefined });
+      await load();
+      showMsg('이미지 갱신 완료');
+    } catch (e) {
+      showMsg(e.response?.data?.error || '이미지 갱신 실패', 'error');
+    }
+  };
+
+  const refreshCartImages = async () => {
+    const sourceIds = (cart.items || [])
+      .map(item => item.product?.source?.id)
+      .filter(Boolean);
+    if (sourceIds.length === 0) return showMsg('갱신할 컴퓨존 상품 URL이 없습니다', 'error');
+
+    setImageRefreshing(true);
+    try {
+      const res = await purchaseCartAPI.refreshImages({
+        sourceIds,
+        limit: sourceIds.length,
+      });
+      await load();
+      const data = res.data || {};
+      showMsg(`이미지 전체 갱신 완료: 성공 ${data.updated || 0}건, 실패 ${data.failed || 0}건`);
+    } catch (e) {
+      showMsg(e.response?.data?.error || '이미지 전체 갱신 실패', 'error');
+    } finally {
+      setImageRefreshing(false);
+    }
+  };
+
+  const appendWorkflowLog = (message, level = 'info') => {
+    const at = new Date().toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+    setWorkflowLog(current => [...current, { at, message, level }].slice(-20));
+  };
+
+  const loadDiagnostics = async ({ quiet = false } = {}) => {
+    setDiagnosticsLoading(true);
+    try {
+      const res = await purchaseCartAPI.diagnosticsLogs({ limit: 160 });
+      const data = res.data || {};
+      setDiagnostics(data);
+      if (!quiet) appendWorkflowLog('자동화 진단 로그를 불러왔습니다.', 'success');
+      return data;
+    } catch (e) {
+      const message = e.response?.data?.error || e.message || '자동화 진단 로그를 불러오지 못했습니다.';
+      if (!quiet) {
+        appendWorkflowLog(message, 'error');
+        showMsg(message, 'error');
+      }
+      return null;
+    } finally {
+      setDiagnosticsLoading(false);
+    }
+  };
+
+  const openPurchaseWorkflow = () => {
+    setPurchaseModalOpen(true);
+    setSoldOutDecision(null);
+    setWorkflowLog([]);
+    setDiagnostics(null);
+    if (!automationForm.groupwareLoginId && currentUser?.username) {
+      setAutomationForm(f => ({ ...f, groupwareLoginId: currentUser.username }));
+    }
+  };
+
+  const purchaseCheckoutPayload = () => ({
+    corp: form.corp,
+    deliveryName: selectedDelivery.label,
+    deliveryKeywords: selectedDelivery.keywords,
+    businessNumber: form.businessNumber,
+    businessContactName: selectedDelivery.businessContactName,
+    requester: form.requester,
+    memo: form.memo,
+    allowPartial: form.allowPartial,
+  });
+
+  const createPurchaseJob = async () => {
+    if ((split.manual.length || split.blocked.length) && !form.allowPartial) {
+      const message = '컴퓨존 자동구매가 안 되는 항목이 포함되어 있습니다. 컴퓨존 상품만 먼저 진행하려면 옵션을 켜세요.';
+      setResult({ error: message });
+      appendWorkflowLog(message, 'error');
+      showMsg(message, 'error');
+      throw new Error(message);
+    }
+
+    setSaving(true);
+    setResult(null);
+    setSoldOutDecision(null);
+    appendWorkflowLog('Purchase_Auto 자동 실행 및 연결 확인 중');
+    try {
+      const res = await purchaseCartAPI.checkout(purchaseCheckoutPayload());
+      const data = res.data || {};
+      setResult({
+        purchaseJob: data.purchaseJob,
+        payload: data.payload,
+        split: data.split || split,
+        purchaseAutoHealth: data.purchaseAutoHealth || null,
+      });
+      appendWorkflowLog('구매 요청 생성 완료', 'success');
+      showMsg('구매 요청을 생성했습니다');
+      return data.purchaseJob?.job || data.purchaseJob;
+    } catch (e) {
+      const message = e.response?.data?.error || e.message || '구매 요청 생성 실패';
+      setResult({ error: message });
+      appendWorkflowLog(message, 'error');
+      showMsg(message, 'error');
+      loadDiagnostics({ quiet: true });
+      throw e;
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const split = useMemo(() => {
+    const compuzone = [];
+    const manual = [];
+    const blocked = [];
+    (cart.items || []).forEach(item => {
+      const source = item.product?.source || {};
+      if (source.type === 'compuzone' && source.productUrl && source.isPurchasable) compuzone.push(item);
+      else if (source.type === 'manual' || !source.type) manual.push(item);
+      else blocked.push(item);
+    });
+    return { compuzone, manual, blocked };
+  }, [cart.items]);
+
+  const selectedCompany = useMemo(() => purchaseCompany(form.corp), [form.corp]);
+  const selectedDelivery = useMemo(() => purchaseDelivery(form.deliveryKey), [form.deliveryKey]);
+  const approvalTitle = useMemo(() => {
+    return `전산 ${purchaseDocumentLabel(split.compuzone)} 구매 건(${selectedDelivery.factory})`;
+  }, [split.compuzone, selectedDelivery.factory]);
+
+  const changeDelivery = (key) => {
+    const nextDelivery = purchaseDelivery(key);
+    setForm(f => ({
+      ...f,
+      deliveryKey: nextDelivery.key,
+      corp: nextDelivery.defaultCorp,
+      businessNumber: nextDelivery.defaultBusinessNumber,
+    }));
+  };
+
+  const changeCorp = (corp) => {
+    const company = purchaseCompany(corp);
+    setForm(f => ({
+      ...f,
+      corp: company.value,
+      businessNumber: company.businessNumbers.some(item => item.value === f.businessNumber)
+        ? f.businessNumber
+        : company.businessNumbers[0]?.value || '',
+    }));
+  };
+
+  const purchaseJob = result?.purchaseJob?.job || result?.purchaseJob || null;
+  const purchaseJobId = purchaseJob?.job_id;
+  const isPurchaseAutoDryRun = result?.purchaseAutoHealth?.dry_run === true;
+
+  const removeSoldOutCartItems = async () => {
+    const targets = soldOutDecision?.items?.length
+      ? soldOutDecision.items
+      : findCartItemsByCompuzoneError(soldOutDecision);
+    if (!targets.length) {
+      throw new Error('품절 상품을 장바구니에서 찾지 못했습니다. 새로고침 후 다시 확인하세요.');
+    }
+
+    let nextCart = cart;
+    for (const item of targets) {
+      const res = await purchaseCartAPI.removeItem(item.cartItemId);
+      nextCart = res.data;
+    }
+    setCart(nextCart);
+    return { nextCart, targets };
+  };
+
+  const hasPurchasableCompuzoneItem = (items = []) => items.some(item => {
+    const source = item.product?.source || {};
+    return source.type === 'compuzone' && source.productUrl && source.isPurchasable;
+  });
+
+  const continueWithoutSoldOut = async () => {
+    setRunningStep('sold-out-continue');
+    try {
+      const { nextCart, targets } = await removeSoldOutCartItems();
+      const removedNames = targets.map(item => item.product?.productName || item.product?.source?.productNo || '품절 상품').join(', ');
+      setSoldOutDecision(null);
+      setResult(null);
+      appendWorkflowLog(`품절 상품 제외: ${removedNames}`, 'success');
+      showMsg(`품절 상품을 제외했습니다: ${removedNames}`);
+
+      if (!hasPurchasableCompuzoneItem(nextCart.items || [])) {
+        const message = '품절 상품을 제외하면 구매 가능한 컴퓨존 상품이 없습니다.';
+        appendWorkflowLog(message, 'error');
+        showMsg(message, 'error');
+        return;
+      }
+
+      appendWorkflowLog('품절 제외 후 구매 요청을 새로 생성합니다.');
+      const checkout = await purchaseCartAPI.checkout(purchaseCheckoutPayload());
+      const checkoutData = checkout.data || {};
+      const job = checkoutData.purchaseJob?.job || checkoutData.purchaseJob;
+      if (!job?.job_id) throw new Error('품절 제외 후 새 구매 작업 ID를 받지 못했습니다.');
+      setResult({
+        purchaseJob: checkoutData.purchaseJob,
+        payload: checkoutData.payload,
+        split: checkoutData.split || null,
+        purchaseAutoHealth: checkoutData.purchaseAutoHealth || null,
+      });
+      appendWorkflowLog('품절 제외 후 구매 요청 생성 완료', 'success');
+
+      appendWorkflowLog('컴퓨존 주문/견적 실행 시작');
+      const response = await purchaseCartAPI.runCompuzoneOrder(job.job_id, { compuzoneAccount: automationForm.compuzoneAccount });
+      const data = response.data || {};
+      const nextJob = data?.job || data;
+      setResult(current => ({
+        ...(current || {}),
+        purchaseJob: nextJob,
+        purchaseAutoHealth: data.purchaseAutoHealth || current?.purchaseAutoHealth || null,
+        lastStep: {
+          step: 'run-compuzone-order',
+          label: '컴퓨존 주문/견적 실행',
+          message: data?.message || '컴퓨존 주문/견적 실행 완료',
+        },
+      }));
+      appendWorkflowLog(data?.message || '컴퓨존 주문/견적 실행 완료', 'success');
+      showMsg('품절 상품을 제외하고 나머지 구매를 진행했습니다');
+    } catch (e) {
+      const detail = e.response?.data?.purchaseAutoError;
+      const message = detail?.message || e.response?.data?.error || e.message || '품절 상품 제외 후 구매 진행 실패';
+      if (detail?.code === 'SOLD_OUT_PRODUCT') {
+        const items = findCartItemsByCompuzoneError(detail);
+        setSoldOutDecision({ ...detail, items });
+      }
+      appendWorkflowLog(message, 'error');
+      showMsg(message, 'error');
+      loadDiagnostics({ quiet: true });
+      setResult(current => ({
+        ...(current || {}),
+        lastStep: {
+          step: 'run-compuzone-order',
+          label: '컴퓨존 주문/견적 실행',
+          error: message,
+        },
+      }));
+    } finally {
+      setRunningStep('');
+    }
+  };
+
+  const replaceSoldOutProduct = async () => {
+    setRunningStep('sold-out-replace');
+    try {
+      const { targets } = await removeSoldOutCartItems();
+      const removedNames = targets.map(item => item.product?.productName || item.product?.source?.productNo || '품절 상품').join(', ');
+      setSoldOutDecision(null);
+      setResult(null);
+      setPurchaseModalOpen(false);
+      appendWorkflowLog(`품절 상품 제외: ${removedNames}`, 'success');
+      showMsg(`품절 상품을 제외했습니다. 카테고리 관리에서 대체상품을 장바구니에 추가하세요: ${removedNames}`);
+    } catch (e) {
+      const message = e.response?.data?.error || e.message || '품절 상품 제외 실패';
+      appendWorkflowLog(message, 'error');
+      showMsg(message, 'error');
+      loadDiagnostics({ quiet: true });
+    } finally {
+      setRunningStep('');
+    }
+  };
+
+  const runPurchaseAutoStep = async (step, label) => {
+    let activeJob = purchaseJob;
+    if (step === 'run-compuzone-order' && !activeJob?.job_id) {
+      try {
+        activeJob = await createPurchaseJob();
+      } catch (_) {
+        return;
+      }
+    }
+
+    const activeJobId = activeJob?.job_id || purchaseJobId;
+    if (!activeJobId) {
+      const message = '먼저 컴퓨존 주문/견적 실행으로 구매 요청을 생성하세요.';
+      appendWorkflowLog(message, 'error');
+      showMsg(message, 'error');
+      return;
+    }
+    if (step === 'submit-approval') {
+      if (!purchaseJob?.order_no || !purchaseJob?.quote_pdf_path) {
+        const message = '먼저 컴퓨존 주문/견적 실행을 완료하세요.';
+        appendWorkflowLog(message, 'error');
+        showMsg(message, 'error');
+        return;
+      }
+      if (!automationForm.groupwareLoginId.trim() || !automationForm.groupwareLoginPassword.trim()) {
+        const message = '그룹웨어 계정과 비밀번호를 입력하세요.';
+        appendWorkflowLog(message, 'error');
+        showMsg(message, 'error');
+        return;
+      }
+    }
+
+    setRunningStep(step);
+    if (step === 'run-compuzone-order') setSoldOutDecision(null);
+    appendWorkflowLog(`${label} 시작`);
+    try {
+      const response = step === 'run-compuzone-order'
+        ? await purchaseCartAPI.runCompuzoneOrder(activeJobId, { compuzoneAccount: automationForm.compuzoneAccount })
+        : await purchaseCartAPI.submitApproval(activeJobId, {
+            groupwareLoginId: automationForm.groupwareLoginId,
+            groupwareLoginPassword: automationForm.groupwareLoginPassword,
+          });
+      const data = response.data || {};
+      const nextJob = data?.job || data;
+      setResult(current => ({
+        ...(current || {}),
+        purchaseJob: nextJob,
+        purchaseAutoHealth: data.purchaseAutoHealth || current?.purchaseAutoHealth || null,
+        lastStep: {
+          step,
+          label,
+          message: data?.message || `${label} 완료`,
+        },
+      }));
+      appendWorkflowLog(data?.message || `${label} 완료`, 'success');
+      showMsg(data?.message || `${label} 완료`);
+    } catch (e) {
+      const detail = e.response?.data?.purchaseAutoError;
+      const message = detail?.message || e.response?.data?.error || e?.message || `${label} 실패`;
+      if (step === 'run-compuzone-order' && detail?.code === 'SOLD_OUT_PRODUCT') {
+        const items = findCartItemsByCompuzoneError(detail);
+        setSoldOutDecision({ ...detail, items });
+      }
+      setResult(current => ({
+        ...(current || {}),
+        lastStep: {
+          step,
+          label,
+          error: message,
+        },
+      }));
+      appendWorkflowLog(message, 'error');
+      showMsg(message, 'error');
+      loadDiagnostics({ quiet: true });
+    } finally {
+      setRunningStep('');
+    }
+  };
+
+  const renderSoldOutDecisionPanel = () => {
+    if (!soldOutDecision) return null;
+    const targets = soldOutDecision.items || [];
+    const productLabel = targets.length
+      ? targets.map(item => item.product?.productName || item.product?.source?.productNo || '품절 상품').join(', ')
+      : soldOutDecision.product_no || '품절 상품';
+
+    return (
+      <div style={{
+        marginTop: 12,
+        background: '#3a2e00',
+        border: '1px solid #d29922',
+        borderRadius: 8,
+        padding: 12,
+        color: '#e3b341',
+        fontSize: 13,
+        lineHeight: 1.5,
+      }}>
+        <div style={{ color: '#ffd33d', fontWeight: 900, marginBottom: 6 }}>품절 상품 확인 필요</div>
+        <div style={{ marginBottom: 10 }}>
+          {productLabel} 상품이 컴퓨존에서 품절입니다. 이 상품을 장바구니에서 제외한 뒤 어떻게 진행할지 선택하세요.
+        </div>
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
+          <button onClick={continueWithoutSoldOut} disabled={!!runningStep} style={{
+            background: runningStep ? '#30363d' : '#1f6feb',
+            border: `1px solid ${runningStep ? '#444c56' : '#58a6ff'}`,
+            color: '#fff', padding: '9px 12px', borderRadius: 6,
+            cursor: runningStep ? 'not-allowed' : 'pointer', fontWeight: 800,
+          }}>제외하고 나머지 구매</button>
+          <button onClick={replaceSoldOutProduct} disabled={!!runningStep} style={{
+            background: runningStep ? '#30363d' : '#8250df',
+            border: `1px solid ${runningStep ? '#444c56' : '#a371f7'}`,
+            color: '#fff', padding: '9px 12px', borderRadius: 6,
+            cursor: runningStep ? 'not-allowed' : 'pointer', fontWeight: 800,
+          }}>제외하고 대체상품 추가</button>
+        </div>
+      </div>
+    );
+  };
+
+  const renderPurchaseActionPanel = () => {
+    if (!result && workflowLog.length === 0) return null;
+
+    return (
+      <div style={{
+        marginTop: 14,
+        background: result?.error ? '#3a1a1a' : '#0d1117',
+        border: `1px solid ${result?.error ? '#f85149' : '#30363d'}`,
+        borderRadius: 8,
+        padding: 14,
+        color: result?.error ? '#f85149' : '#c9d1d9',
+        fontSize: 13,
+      }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'flex-start', flexWrap: 'wrap', marginBottom: 10 }}>
+          <div style={{ color: '#e6edf3', fontWeight: 900 }}>진행 상태</div>
+          <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+            {purchaseJob?.status && <Badge color="green">상태 {purchaseJob.status}</Badge>}
+            {purchaseJob?.order_no && <Badge color="blue">주문번호 {purchaseJob.order_no}</Badge>}
+            {isPurchaseAutoDryRun && <Badge color="yellow">테스트모드</Badge>}
+          </div>
+        </div>
+
+        {purchaseJobId && <div style={{ marginBottom: 8, color: '#8b949e', fontFamily: 'monospace', fontSize: 12 }}>작업 ID {purchaseJobId}</div>}
+        {isPurchaseAutoDryRun && (
+          <div style={{ background: '#3a2e00', border: '1px solid #9e6a03', color: '#e3b341', borderRadius: 6, padding: 10, lineHeight: 1.5, marginBottom: 10 }}>
+            현재 구매 자동화 서버가 테스트모드라 실제 컴퓨존 주문과 그룹웨어 품의는 실행하지 않습니다.
+          </div>
+        )}
+        {purchaseJob?.approval_document_url && (
+          <a href={purchaseJob.approval_document_url} target="_blank" rel="noreferrer" style={{ display: 'inline-block', color: '#58a6ff', marginBottom: 10 }}>품의 문서 열기</a>
+        )}
+        {workflowLog.length > 0 && (
+          <div style={{ display: 'grid', gap: 6 }}>
+            {workflowLog.map((log, idx) => (
+              <div key={idx} style={{
+                display: 'flex',
+                gap: 8,
+                color: log.level === 'error' ? '#f85149' : log.level === 'success' ? '#3fb950' : '#c9d1d9',
+                background: '#161b22',
+                border: '1px solid #21262d',
+                borderRadius: 6,
+                padding: '7px 9px',
+              }}>
+                <span style={{ color: '#8b949e', fontFamily: 'monospace' }}>{log.at}</span>
+                <span>{log.message}</span>
+              </div>
+            ))}
+          </div>
+        )}
+        {result?.lastStep && (
+          <div style={{
+            marginTop: 10,
+            color: result.lastStep.error ? '#f85149' : '#c9d1d9',
+            background: result.lastStep.error ? '#3a1a1a' : '#161b22',
+            border: `1px solid ${result.lastStep.error ? '#f85149' : '#30363d'}`,
+            borderRadius: 6,
+            padding: 10,
+          }}>
+            {result.lastStep.error || result.lastStep.message}
+          </div>
+        )}
+      </div>
+    );
+  };
+
+  const renderDiagnosticsPanel = () => {
+    if (!diagnostics) return null;
+    const renderLogLines = (lines = []) => (
+      <pre style={{
+        margin: 0,
+        maxHeight: 180,
+        overflow: 'auto',
+        whiteSpace: 'pre-wrap',
+        wordBreak: 'break-all',
+        background: '#0d1117',
+        border: '1px solid #30363d',
+        borderRadius: 6,
+        padding: 10,
+        color: '#c9d1d9',
+        fontSize: 11,
+        lineHeight: 1.45,
+      }}>{lines.length ? lines.join('\n') : '로그 없음'}</pre>
+    );
+
+    return (
+      <div style={{
+        marginTop: 12,
+        background: '#0d1117',
+        border: '1px solid #30363d',
+        borderRadius: 8,
+        padding: 12,
+        color: '#c9d1d9',
+        fontSize: 12,
+      }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, alignItems: 'center', marginBottom: 8 }}>
+          <div style={{ color: '#e6edf3', fontWeight: 900 }}>자동화 진단 로그</div>
+          <button onClick={() => loadDiagnostics()} disabled={diagnosticsLoading} style={{
+            background: '#21262d',
+            border: '1px solid #30363d',
+            color: '#c9d1d9',
+            padding: '5px 9px',
+            borderRadius: 5,
+            cursor: diagnosticsLoading ? 'not-allowed' : 'pointer',
+            fontSize: 12,
+          }}>{diagnosticsLoading ? '불러오는 중...' : '다시 불러오기'}</button>
+        </div>
+        <div style={{ color: '#8b949e', marginBottom: 8, lineHeight: 1.5 }}>
+          <div>API: {diagnostics.apiBaseUrl || '-'}</div>
+          <div>Health: {diagnostics.health ? JSON.stringify(diagnostics.health) : '-'}</div>
+          <div>Bridge log: {diagnostics.bridgeLogPath || '-'}</div>
+          <div>Process log: {diagnostics.processLogPath || '-'}</div>
+        </div>
+        <div style={{ display: 'grid', gap: 8 }}>
+          <div>
+            <div style={{ color: '#8b949e', marginBottom: 4 }}>WMS 브릿지 로그</div>
+            {renderLogLines(diagnostics.bridge)}
+          </div>
+          <div>
+            <div style={{ color: '#8b949e', marginBottom: 4 }}>Purchase_Auto 프로세스 로그</div>
+            {renderLogLines(diagnostics.process)}
+          </div>
+        </div>
+      </div>
+    );
+  };
+
+  return (
+    <div>
+      <SectionHeader
+        title="장바구니"
+        subtitle="카테고리에서 담은 품목을 컴퓨존 구매 작업으로 넘깁니다"
+        action={cart.items?.length ? (
+          <div style={{ display: 'flex', gap: 8 }}>
+            <button onClick={() => { setPurchaseModalOpen(true); loadDiagnostics(); }} disabled={diagnosticsLoading} style={{
+              background: '#21262d', border: '1px solid #30363d', color: '#c9d1d9',
+              padding: '8px 14px', borderRadius: 6, cursor: diagnosticsLoading ? 'not-allowed' : 'pointer',
+              opacity: diagnosticsLoading ? 0.65 : 1, fontSize: 13,
+            }}>{diagnosticsLoading ? '로그 확인 중...' : '자동화 로그'}</button>
+            <button onClick={refreshCartImages} disabled={imageRefreshing} style={{
+              background: '#1f6feb', border: '1px solid #58a6ff', color: '#fff',
+              padding: '8px 14px', borderRadius: 6, cursor: imageRefreshing ? 'not-allowed' : 'pointer',
+              opacity: imageRefreshing ? 0.65 : 1, fontSize: 13,
+            }}>{imageRefreshing ? '이미지 갱신 중...' : '이미지 전체 갱신'}</button>
+            <button onClick={clearCart} style={{
+              background: 'none', border: '1px solid #3a1a1a', color: '#f85149',
+              padding: '8px 14px', borderRadius: 6, cursor: 'pointer', fontSize: 13,
+            }}>비우기</button>
+          </div>
+        ) : null}
+      />
+
+      {loading ? (
+        <div style={{ color: '#8b949e', padding: 40, textAlign: 'center' }}>불러오는 중...</div>
+      ) : cart.items.length === 0 ? (
+        <div style={{ background: '#161b22', border: '1px solid #21262d', borderRadius: 8, padding: 40, textAlign: 'center', color: '#8b949e' }}>
+          카테고리 관리에서 품목을 장바구니에 담으세요.
+        </div>
+      ) : (
+        <>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 320px', gap: 18, alignItems: 'start' }}>
+            <div style={{ background: '#161b22', border: '1px solid #21262d', borderRadius: 8, overflow: 'hidden' }}>
+              <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
+                <thead style={{ background: '#1c2128' }}>
+                  <tr>
+                    {['상품', '구매처', '단가', '수량', '금액', ''].map(h => (
+                      <th key={h} style={{ textAlign: h === '상품' ? 'left' : 'right', padding: '10px 12px', color: '#8b949e', fontWeight: 500, borderBottom: '1px solid #21262d' }}>{h}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {cart.items.map(item => {
+                    const product = item.product || {};
+                    const source = product.source || {};
+                    return (
+                      <tr key={item.cartItemId} style={{ borderBottom: '1px solid #21262d' }}>
+                        <td style={{ padding: '10px 12px' }}>
+                          <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
+                            <ProductThumb product={product} onOpen={setImagePreview} />
+                            <div style={{ minWidth: 0 }}>
+                              <div style={{ color: '#e6edf3', fontWeight: 700 }}>{product.productName}</div>
+                              <div style={{ color: '#8b949e', fontSize: 12, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: 320 }}>{product.specification || product.productCode}</div>
+                              <div style={{ display: 'flex', gap: 10, marginTop: 5, fontSize: 11 }}>
+                                {source.productUrl ? <a href={source.productUrl} target="_blank" rel="noreferrer" style={{ color: '#58a6ff' }}>상품 페이지</a> : <span style={{ color: '#f0883e' }}>URL 없음</span>}
+                                <button onClick={() => refreshImage(item)} style={{ background: 'none', border: 'none', padding: 0, color: '#8b949e', cursor: 'pointer', fontSize: 11 }}>이미지 갱신</button>
+                              </div>
+                            </div>
+                          </div>
+                        </td>
+                        <td style={{ padding: '10px 12px', textAlign: 'right' }}><Badge color={sourceBadgeColor(source)}>{sourceLabel(source)}</Badge></td>
+                        <td style={{ padding: '10px 12px', textAlign: 'right', color: '#e6edf3' }}>{formatWon(product.unitPrice)}</td>
+                        <td style={{ padding: '10px 12px', textAlign: 'right' }}>
+                          <input type="number" min="0" value={item.quantity} onChange={e => changeQty(item, e.target.value)}
+                            style={{ ...inputStyle, width: 70, padding: '6px 8px', textAlign: 'right', fontSize: 13 }} />
+                        </td>
+                        <td style={{ padding: '10px 12px', textAlign: 'right', color: '#e6edf3', fontWeight: 700 }}>{formatWon(item.subtotal)}</td>
+                        <td style={{ padding: '10px 12px', textAlign: 'right' }}>
+                          <button onClick={() => removeItem(item)} style={{
+                            background: 'none', border: '1px solid #3a1a1a', color: '#f85149',
+                            padding: '4px 8px', borderRadius: 4, cursor: 'pointer', fontSize: 12,
+                          }}>삭제</button>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+
+            <div style={{ background: '#161b22', border: '1px solid #21262d', borderRadius: 8, padding: 16 }}>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, marginBottom: 14 }}>
+                <div style={{ background: '#0d1117', border: '1px solid #30363d', borderRadius: 6, padding: 10 }}>
+                  <div style={{ color: '#8b949e', fontSize: 12 }}>총 수량</div>
+                  <div style={{ color: '#e6edf3', fontSize: 20, fontWeight: 800 }}>{cart.totalQuantity.toLocaleString()}</div>
+                </div>
+                <div style={{ background: '#0d1117', border: '1px solid #30363d', borderRadius: 6, padding: 10 }}>
+                  <div style={{ color: '#8b949e', fontSize: 12 }}>예상 금액</div>
+                  <div style={{ color: '#e6edf3', fontSize: 20, fontWeight: 800 }}>{formatWon(cart.totalAmount)}</div>
+                </div>
+              </div>
+
+              <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 14 }}>
+                <Badge color="blue">컴퓨존 {split.compuzone.length}</Badge>
+                <Badge color="gray">수동 {split.manual.length}</Badge>
+                <Badge color="purple">외부 {split.blocked.length}</Badge>
+              </div>
+
+              {(split.manual.length || split.blocked.length) > 0 && (
+                <div style={{ background: '#3a2e00', border: '1px solid #9e6a03', color: '#e3b341', borderRadius: 6, padding: 10, fontSize: 12, lineHeight: 1.5, marginBottom: 14 }}>
+                  컴퓨존 자동구매가 안 되는 항목이 포함되어 있습니다. 기본은 막아두고, 아래 옵션을 켜면 컴퓨존 상품만 먼저 구매 요청으로 넘깁니다.
+                </div>
+              )}
+
+              <Field label="법인/회사 *">
+                <select value={form.corp} onChange={e => changeCorp(e.target.value)} style={inputStyle}>
+                  {PURCHASE_COMPANIES.map(company => (
+                    <option key={company.value} value={company.value}>{company.label}</option>
+                  ))}
+                </select>
+              </Field>
+              <Field label="배송지 *">
+                <select value={form.deliveryKey} onChange={e => changeDelivery(e.target.value)} style={inputStyle}>
+                  {PURCHASE_DELIVERIES.map(delivery => (
+                    <option key={delivery.key} value={delivery.key}>{delivery.label} / {delivery.factory}</option>
+                  ))}
+                </select>
+              </Field>
+              <Field label="사업장 *">
+                <select value={form.businessNumber} onChange={e => setForm(f => ({ ...f, businessNumber: e.target.value }))} style={inputStyle}>
+                  {selectedCompany.businessNumbers.map(item => (
+                    <option key={item.value} value={item.value}>{item.label}</option>
+                  ))}
+                </select>
+              </Field>
+              <Field label="품의 제목 *">
+                <input value={approvalTitle} readOnly style={{ ...inputStyle, color: '#e6edf3', background: '#0d1117' }} />
+              </Field>
+              <Field label="요청자 *">
+                <input value={form.requester} onChange={e => setForm(f => ({ ...f, requester: e.target.value }))} style={inputStyle} />
+              </Field>
+              <Field label="메모">
+                <textarea value={form.memo} onChange={e => setForm(f => ({ ...f, memo: e.target.value }))} style={{ ...inputStyle, minHeight: 86, resize: 'vertical' }} placeholder="공장/부서/대상자/용도 등" />
+              </Field>
+              <label style={{ display: 'flex', alignItems: 'center', gap: 8, color: '#c9d1d9', fontSize: 13, marginBottom: 14 }}>
+                <input type="checkbox" checked={form.allowPartial} onChange={e => setForm(f => ({ ...f, allowPartial: e.target.checked }))} style={{ accentColor: '#58a6ff' }} />
+                컴퓨존 상품만 먼저 요청 생성
+              </label>
+              <button onClick={openPurchaseWorkflow} disabled={saving || split.compuzone.length === 0} style={{
+                width: '100%', background: saving || split.compuzone.length === 0 ? '#30363d' : '#238636',
+                border: `1px solid ${saving || split.compuzone.length === 0 ? '#444c56' : '#2ea043'}`,
+                color: '#fff', padding: '10px 14px', borderRadius: 6,
+                cursor: saving || split.compuzone.length === 0 ? 'not-allowed' : 'pointer', fontSize: 14, fontWeight: 800,
+              }}>{saving ? '진행 준비 중...' : '구매 & 품의 진행'}</button>
+            </div>
+          </div>
+
+        </>
+      )}
+
+      {purchaseModalOpen && (
+        <Modal title="구매 & 품의 진행" onClose={() => setPurchaseModalOpen(false)} width={680}>
+          <Field label="컴퓨존 구매계정 *">
+            <select value={automationForm.compuzoneAccount} onChange={e => setAutomationForm(f => ({ ...f, compuzoneAccount: e.target.value }))} style={inputStyle}>
+              <option value="ds1500">ds1500</option>
+              <option value="reum0009">reum0009</option>
+            </select>
+          </Field>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+            <Field label="그룹웨어 계정 *">
+              <input value={automationForm.groupwareLoginId} onChange={e => setAutomationForm(f => ({ ...f, groupwareLoginId: e.target.value }))} style={inputStyle} placeholder="본인 그룹웨어 ID" />
+            </Field>
+            <Field label="그룹웨어 비밀번호 *">
+              <input type="password" value={automationForm.groupwareLoginPassword} onChange={e => setAutomationForm(f => ({ ...f, groupwareLoginPassword: e.target.value }))} style={inputStyle} placeholder="비밀번호" />
+            </Field>
+          </div>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, marginTop: 4 }}>
+            <button onClick={() => runPurchaseAutoStep('run-compuzone-order', '컴퓨존 주문/견적 실행')} disabled={!!runningStep || saving || !!soldOutDecision || split.compuzone.length === 0} style={{
+              background: runningStep || saving || soldOutDecision || split.compuzone.length === 0 ? '#30363d' : '#1f6feb',
+              border: `1px solid ${runningStep || saving || soldOutDecision || split.compuzone.length === 0 ? '#444c56' : '#58a6ff'}`,
+              color: '#fff', padding: '10px 14px', borderRadius: 6,
+              cursor: runningStep || saving || soldOutDecision || split.compuzone.length === 0 ? 'not-allowed' : 'pointer', fontSize: 14, fontWeight: 800,
+            }}>{runningStep === 'run-compuzone-order' || saving ? '주문/견적 진행 중...' : '컴퓨존 주문/견적 실행'}</button>
+            <button onClick={() => runPurchaseAutoStep('submit-approval', '그룹웨어 품의 상신')} disabled={!!runningStep || !purchaseJob?.order_no || !purchaseJob?.quote_pdf_path} style={{
+              background: runningStep || !purchaseJob?.order_no || !purchaseJob?.quote_pdf_path ? '#30363d' : '#238636',
+              border: `1px solid ${runningStep || !purchaseJob?.order_no || !purchaseJob?.quote_pdf_path ? '#444c56' : '#2ea043'}`,
+              color: '#fff', padding: '10px 14px', borderRadius: 6,
+              cursor: runningStep || !purchaseJob?.order_no || !purchaseJob?.quote_pdf_path ? 'not-allowed' : 'pointer', fontSize: 14, fontWeight: 800,
+            }}>{runningStep === 'submit-approval' ? '품의 상신 중...' : '그룹웨어 품의 상신'}</button>
+          </div>
+          {renderSoldOutDecisionPanel()}
+          {renderPurchaseActionPanel()}
+          {renderDiagnosticsPanel()}
+        </Modal>
+      )}
+
+      <ImagePreviewModal product={imagePreview} onClose={() => setImagePreview(null)} />
     </div>
   );
 }

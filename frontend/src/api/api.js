@@ -340,6 +340,22 @@ const updateAPI = {
   check: () => axios.get(`${API_BASE_URL}/update/check`),
 };
 
+const purchaseCartAPI = {
+  getCatalog: (params) => axios.get(`${API_BASE_URL}/purchase-cart/catalog`, { headers: getAuthHeader(), params }),
+  getCart: () => axios.get(`${API_BASE_URL}/purchase-cart`, { headers: getAuthHeader() }),
+  addItem: (data) => axios.post(`${API_BASE_URL}/purchase-cart/items`, data, { headers: getAuthHeader() }),
+  updateItem: (id, data) => axios.patch(`${API_BASE_URL}/purchase-cart/items/${id}`, data, { headers: getAuthHeader() }),
+  removeItem: (id) => axios.delete(`${API_BASE_URL}/purchase-cart/items/${id}`, { headers: getAuthHeader() }),
+  clear: () => axios.delete(`${API_BASE_URL}/purchase-cart`, { headers: getAuthHeader() }),
+  preview: (data = {}) => axios.post(`${API_BASE_URL}/purchase-cart/preview`, data, { headers: getAuthHeader() }),
+  checkout: (data) => axios.post(`${API_BASE_URL}/purchase-cart/checkout`, data, { headers: getAuthHeader() }),
+  runCompuzoneOrder: (jobId, data = {}) => axios.post(`${API_BASE_URL}/purchase-cart/jobs/${jobId}/run-compuzone-order`, data, { headers: getAuthHeader() }),
+  submitApproval: (jobId, data = {}) => axios.post(`${API_BASE_URL}/purchase-cart/jobs/${jobId}/submit-approval`, data, { headers: getAuthHeader() }),
+  diagnosticsLogs: (params = {}) => axios.get(`${API_BASE_URL}/purchase-cart/diagnostics/logs`, { headers: getAuthHeader(), params }),
+  refreshImages: (data = {}) => axios.post(`${API_BASE_URL}/purchase-cart/images/refresh`, data, { headers: getAuthHeader() }),
+  refreshImage: (productId, data = {}) => axios.post(`${API_BASE_URL}/purchase-cart/products/${productId}/refresh-image`, data, { headers: getAuthHeader() }),
+};
+
 export {
   dashboardAPI,
   authAPI,
@@ -363,7 +379,8 @@ export {
   gwMappingAPI,
   dbConfigAPI,
   gwRequestsAPI,
-  updateAPI
+  updateAPI,
+  purchaseCartAPI
 };
 
 const api = {
@@ -389,7 +406,8 @@ const api = {
   gwMappingAPI,
   dbConfigAPI,
   gwRequestsAPI,
-  updateAPI
+  updateAPI,
+  purchaseCartAPI
 };
 
 export default api;

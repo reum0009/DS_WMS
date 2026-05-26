@@ -20,6 +20,77 @@ import ApplicantScreen from './components/screens/ApplicantScreen';
 import ApproverScreen from './components/screens/ApproverScreen';
 import ReleaserScreen from './components/screens/ReleaserScreen';
 
+class AppErrorBoundary extends React.Component {
+  constructor(props) {
+    super(props);
+    this.state = { error: null, errorInfo: null };
+  }
+
+  static getDerivedStateFromError(error) {
+    return { error };
+  }
+
+  componentDidCatch(error, errorInfo) {
+    this.setState({ errorInfo });
+    console.error('[WMS render error]', error, errorInfo);
+  }
+
+  render() {
+    const { error, errorInfo } = this.state;
+    if (!error) return this.props.children;
+
+    return (
+      <div style={{
+        minHeight: '100vh',
+        background: '#0d1117',
+        color: '#e6edf3',
+        fontFamily: 'system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif',
+        padding: 32,
+      }}>
+        <div style={{
+          maxWidth: 880,
+          margin: '10vh auto',
+          background: '#161b22',
+          border: '1px solid #f85149',
+          borderRadius: 8,
+          padding: 24,
+        }}>
+          <div style={{ color: '#f85149', fontSize: 20, fontWeight: 800, marginBottom: 10 }}>
+            화면 렌더링 오류가 발생했습니다
+          </div>
+          <div style={{ color: '#c9d1d9', lineHeight: 1.6, marginBottom: 16 }}>
+            흰 화면으로 멈추지 않도록 오류를 표시했습니다. 새로고침 후에도 반복되면 아래 오류 메시지를 확인해 주세요.
+          </div>
+          <pre style={{
+            whiteSpace: 'pre-wrap',
+            wordBreak: 'break-word',
+            background: '#0d1117',
+            border: '1px solid #30363d',
+            borderRadius: 6,
+            padding: 12,
+            color: '#ff7b72',
+            maxHeight: 260,
+            overflow: 'auto',
+          }}>{String(error?.stack || error?.message || error)}
+{errorInfo?.componentStack || ''}</pre>
+          <button onClick={() => window.location.reload()} style={{
+            marginTop: 16,
+            background: '#238636',
+            border: '1px solid #2ea043',
+            color: '#fff',
+            borderRadius: 6,
+            padding: '10px 16px',
+            fontWeight: 800,
+            cursor: 'pointer',
+          }}>
+            새로고침
+          </button>
+        </div>
+      </div>
+    );
+  }
+}
+
 // ── 창고 역할 전용 앱 (홈 ↔ POS 전환) ───────────────────────────
 // ── 창고 역할 전용 앱 — 화면별 독립 컴포넌트 라우터 ─────────────
 function WarehouseApp({ user, onLogout }) {
@@ -217,16 +288,20 @@ function Root() {
   const inviteToken = new URLSearchParams(window.location.search).get('invite');
   if (inviteToken) {
     return (
-      <InviteAcceptPage
-        token={inviteToken}
-        onDone={() => { window.history.replaceState({}, '', '/'); window.location.reload(); }}
-      />
+      <AppErrorBoundary>
+        <InviteAcceptPage
+          token={inviteToken}
+          onDone={() => { window.history.replaceState({}, '', '/'); window.location.reload(); }}
+        />
+      </AppErrorBoundary>
     );
   }
   return (
-    <UpdateChecker>
-      <App />
-    </UpdateChecker>
+    <AppErrorBoundary>
+      <UpdateChecker>
+        <App />
+      </UpdateChecker>
+    </AppErrorBoundary>
   );
 }
 
