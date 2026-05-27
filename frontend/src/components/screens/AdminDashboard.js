@@ -4303,6 +4303,7 @@ function PurchaseCartPanel({ showMsg, currentUser }) {
 
   const purchaseCheckoutPayload = () => ({
     corp: form.corp,
+    factory: selectedFactory,
     deliveryName: selectedDelivery.label,
     deliveryFactory: selectedDelivery.factory,
     deliveryKeywords: selectedDelivery.keywords,
@@ -4365,9 +4366,13 @@ function PurchaseCartPanel({ showMsg, currentUser }) {
 
   const selectedCompany = useMemo(() => purchaseCompany(form.corp), [form.corp]);
   const selectedDelivery = useMemo(() => purchaseDelivery(form.deliveryKey), [form.deliveryKey]);
+  const selectedBusinessNumber = useMemo(() => {
+    return selectedCompany.businessNumbers.find(item => item.value === form.businessNumber) || selectedCompany.businessNumbers[0] || null;
+  }, [selectedCompany, form.businessNumber]);
+  const selectedFactory = selectedBusinessNumber?.label || '';
   const approvalTitle = useMemo(() => {
-    return `전산 ${purchaseDocumentLabel(split.compuzone)} 구매 건(${selectedDelivery.factory})`;
-  }, [split.compuzone, selectedDelivery.factory]);
+    return `전산 ${purchaseDocumentLabel(split.compuzone)} 구매 건(${selectedFactory})`;
+  }, [split.compuzone, selectedFactory]);
 
   const changeDelivery = (key) => {
     const nextDelivery = purchaseDelivery(key);
