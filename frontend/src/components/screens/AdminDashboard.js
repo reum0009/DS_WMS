@@ -1737,9 +1737,9 @@ const PURCHASE_COMPANIES = [
     label: '대승정밀',
     businessNumbers: [
       { label: 'P1공장', value: '125-81-32697' },
-      { label: 'P3공장', value: '403-85-15640' },
-      { label: 'P4공장', value: '844-85-00770' },
-      { label: 'P2공장', value: '118-85-07029' },
+      { label: 'P2공장', value: '403-85-15640' },
+      { label: 'P3공장', value: '844-85-00770' },
+      { label: 'P4공장', value: '118-85-07029' },
     ],
   },
   {
