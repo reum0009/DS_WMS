@@ -1755,7 +1755,7 @@ const PURCHASE_COMPANIES = [
 const PURCHASE_DELIVERIES = [
   {
     key: 'gimje-it',
-    label: '김제 전산팀',
+    label: '김제전산팀',
     factory: 'P3공장',
     defaultCorp: '대승정밀',
     defaultBusinessNumber: '403-85-15640',
@@ -1764,7 +1764,7 @@ const PURCHASE_DELIVERIES = [
   },
   {
     key: 'pyeongtaek-it',
-    label: '평택 전산팀',
+    label: '평택전산팀',
     factory: 'D1공장',
     defaultCorp: '대승',
     defaultBusinessNumber: '125-81-05619',
@@ -4304,6 +4304,7 @@ function PurchaseCartPanel({ showMsg, currentUser }) {
   const purchaseCheckoutPayload = () => ({
     corp: form.corp,
     deliveryName: selectedDelivery.label,
+    deliveryFactory: selectedDelivery.factory,
     deliveryKeywords: selectedDelivery.keywords,
     businessNumber: form.businessNumber,
     businessContactName: selectedDelivery.businessContactName,
@@ -4373,8 +4374,6 @@ function PurchaseCartPanel({ showMsg, currentUser }) {
     setForm(f => ({
       ...f,
       deliveryKey: nextDelivery.key,
-      corp: nextDelivery.defaultCorp,
-      businessNumber: nextDelivery.defaultBusinessNumber,
     }));
   };
 
@@ -4865,7 +4864,7 @@ function PurchaseCartPanel({ showMsg, currentUser }) {
               <Field label="배송지 *">
                 <select value={form.deliveryKey} onChange={e => changeDelivery(e.target.value)} style={inputStyle}>
                   {PURCHASE_DELIVERIES.map(delivery => (
-                    <option key={delivery.key} value={delivery.key}>{delivery.label} / {delivery.factory}</option>
+                    <option key={delivery.key} value={delivery.key}>{delivery.label}</option>
                   ))}
                 </select>
               </Field>
