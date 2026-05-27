@@ -1,5 +1,7 @@
 const express = require('express');
 const fs = require('fs');
+const http = require('http');
+const https = require('https');
 const path = require('path');
 const { spawn } = require('child_process');
 const { QueryTypes } = require('sequelize');
@@ -663,40 +665,77 @@ async function delay(ms) {
 }
 
 async function purchaseAutoFetch(pathname, { method = 'GET', body = null, timeoutMs = 5000 } = {}) {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
   const startedAt = Date.now();
   appendPurchaseAutoLog('request:start', { method, pathname, timeoutMs, body });
-  try {
-    const response = await fetch(`${PURCHASE_AUTO_API_BASE_URL}${pathname}`, {
-      method,
-      headers: body ? { 'Content-Type': 'application/json' } : undefined,
-      body: body ? JSON.stringify(body) : undefined,
-      signal: controller.signal,
+  return new Promise((resolve, reject) => {
+    const target = new URL(`${PURCHASE_AUTO_API_BASE_URL}${pathname}`);
+    const payload = body ? JSON.stringify(body) : null;
+    const transport = target.protocol === 'https:' ? https : http;
+    const request = transport.request(
+      {
+        protocol: target.protocol,
+        hostname: target.hostname,
+        port: target.port,
+        path: `${target.pathname}${target.search}`,
+        method,
+        timeout: timeoutMs,
+        headers: payload
+          ? {
+              'Content-Type': 'application/json',
+              'Content-Length': Buffer.byteLength(payload),
+            }
+          : undefined,
+      },
+      (response) => {
+        const chunks = [];
+        response.on('data', chunk => chunks.push(Buffer.from(chunk)));
+        response.on('end', () => {
+          const raw = Buffer.concat(chunks).toString('utf8');
+          let data = {};
+          if (raw) {
+            try {
+              data = JSON.parse(raw);
+            } catch (_) {
+              data = { raw };
+            }
+          }
+          const responseLike = {
+            status: response.statusCode || 0,
+            ok: (response.statusCode || 0) >= 200 && (response.statusCode || 0) < 300,
+            headers: response.headers || {},
+          };
+          appendPurchaseAutoLog('request:finish', {
+            method,
+            pathname,
+            status: responseLike.status,
+            ok: responseLike.ok,
+            elapsedMs: Date.now() - startedAt,
+            data,
+          });
+          resolve({ response: responseLike, data });
+        });
+      }
+    );
+
+    request.on('timeout', () => {
+      const err = new Error(`Purchase_Auto request timed out after ${timeoutMs}ms`);
+      err.name = 'TimeoutError';
+      request.destroy(err);
     });
-    const data = await response.json().catch(() => ({}));
-    appendPurchaseAutoLog('request:finish', {
-      method,
-      pathname,
-      status: response.status,
-      ok: response.ok,
-      elapsedMs: Date.now() - startedAt,
-      data,
+    request.on('error', (err) => {
+      appendPurchaseAutoLog('request:error', {
+        method,
+        pathname,
+        elapsedMs: Date.now() - startedAt,
+        error: err.message,
+        name: err.name,
+        stack: err.stack,
+      });
+      reject(err);
     });
-    return { response, data };
-  } catch (err) {
-    appendPurchaseAutoLog('request:error', {
-      method,
-      pathname,
-      elapsedMs: Date.now() - startedAt,
-      error: err.message,
-      name: err.name,
-      stack: err.stack,
-    });
-    throw err;
-  } finally {
-    clearTimeout(timer);
-  }
+    if (payload) request.write(payload);
+    request.end();
+  });
 }
 
 async function checkPurchaseAutoHealth() {
@@ -846,6 +885,12 @@ function purchaseAutoErrorDetail(data, fallback) {
     };
   }
   return { message: String(detail || fallback) };
+}
+
+function extendPurchaseAutoResponseTimeout(req, res) {
+  const timeoutMs = Math.max(PURCHASE_AUTO_STEP_TIMEOUT_MS + 60000, 60000);
+  if (typeof req.setTimeout === 'function') req.setTimeout(timeoutMs);
+  if (typeof res.setTimeout === 'function') res.setTimeout(timeoutMs);
 }
 
 function selectedCompuzoneAccount(value) {
@@ -1101,6 +1146,7 @@ router.post('/checkout', roleAuth(WRITE_ROLES), async (req, res) => {
 
 
 router.post('/jobs/:jobId/run-compuzone-order', roleAuth(WRITE_ROLES), async (req, res) => {
+  extendPurchaseAutoResponseTimeout(req, res);
   try {
     const jobId = String(req.params.jobId || '').trim();
     const account = selectedCompuzoneAccount(req.body?.compuzoneAccount || req.body?.compuzone_login_id);
@@ -1127,6 +1173,7 @@ router.post('/jobs/:jobId/run-compuzone-order', roleAuth(WRITE_ROLES), async (re
 });
 
 router.post('/jobs/:jobId/submit-approval', roleAuth(WRITE_ROLES), async (req, res) => {
+  extendPurchaseAutoResponseTimeout(req, res);
   try {
     const jobId = String(req.params.jobId || '').trim();
     const loginId = String(req.body?.groupwareLoginId || req.body?.groupware_login_id || '').trim();
