@@ -1785,6 +1785,7 @@ const PURCHASE_DELIVERIES = [
 
 const purchaseCompany = (value) => PURCHASE_COMPANIES.find(c => c.value === value) || PURCHASE_COMPANIES[0];
 const purchaseDelivery = (key) => PURCHASE_DELIVERIES.find(d => d.key === key) || PURCHASE_DELIVERIES[0];
+const purchaseBusinessNumber = (company, value) => company.businessNumbers.find(item => item.value === value) || company.businessNumbers[0] || null;
 
 const purchaseDocumentCategory = (product) => {
   const text = [product?.productName, product?.specification, product?.productCode].filter(Boolean).join(' ').toLowerCase();
@@ -4327,6 +4328,8 @@ function PurchaseCartPanel({ showMsg, currentUser }) {
     businessContactName: selectedDelivery.businessContactName,
     requester: form.requester,
     memo: form.memo,
+    factory: selectedFactoryLabel,
+    deliveryFactory: selectedDelivery.factory,
     assetRecipients,
     allowPartial: form.allowPartial,
   });
@@ -4429,9 +4432,14 @@ function PurchaseCartPanel({ showMsg, currentUser }) {
 
   const selectedCompany = useMemo(() => purchaseCompany(form.corp), [form.corp]);
   const selectedDelivery = useMemo(() => purchaseDelivery(form.deliveryKey), [form.deliveryKey]);
+  const selectedBusinessNumber = useMemo(
+    () => purchaseBusinessNumber(selectedCompany, form.businessNumber),
+    [selectedCompany, form.businessNumber]
+  );
+  const selectedFactoryLabel = selectedBusinessNumber?.label?.replace(/\s+/g, '') || selectedDelivery.factory;
   const approvalTitle = useMemo(() => {
-    return `전산 ${purchaseDocumentLabel(split.compuzone)} 구매 건(${selectedDelivery.factory})`;
-  }, [split.compuzone, selectedDelivery.factory]);
+    return `전산 ${purchaseDocumentLabel(split.compuzone)} 구매 건(${selectedFactoryLabel})`;
+  }, [split.compuzone, selectedFactoryLabel]);
 
   const changeDelivery = (key) => {
     const nextDelivery = purchaseDelivery(key);

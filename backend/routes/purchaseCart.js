@@ -577,11 +577,40 @@ function documentLabelForItems(items) {
   return '소모품';
 }
 
+const FACTORY_BY_BUSINESS_NUMBER = {
+  '1258105619': 'D1공장',
+  '4038507607': 'D2공장',
+  '4038523311': 'D3공장',
+  '1258132697': 'P1공장',
+  '4038515640': 'P2공장',
+  '8448500770': 'P3공장',
+  '1188507029': 'P4공장',
+  '1258151622': '일강1공장',
+  '4038520895': '일강2공장',
+};
+
+function businessNumberFactory(value) {
+  const normalized = String(value || '').replace(/\D/g, '');
+  return FACTORY_BY_BUSINESS_NUMBER[normalized] || '';
+}
+
+function factoryLabelFromText(value) {
+  const text = String(value || '').trim();
+  const daeseungMatch = text.match(/\b([DP][0-9])\s*공장\b/i);
+  if (daeseungMatch) return `${daeseungMatch[1].toUpperCase()}공장`;
+  const ilgangMatch = text.match(/일강\s*([12])\s*공장/);
+  if (ilgangMatch) return `일강${ilgangMatch[1]}공장`;
+  return '';
+}
+
 function purchaseFactory(body) {
+  const byBusinessNumber = businessNumberFactory(body.businessNumber);
+  if (byBusinessNumber) return byBusinessNumber;
   const text = String(body.factory || body.deliveryFactory || body.title || body.memo || '').trim();
-  const match = text.match(/\b([DP][0-9])\s*공장\b/i);
-  if (match) return `${match[1].toUpperCase()}공장`;
+  const byText = factoryLabelFromText(text);
+  if (byText) return byText;
   const corp = String(body.corp || '').replace(/\s+/g, '');
+  if (corp.includes('일강')) return '일강1공장';
   return corp.includes('정밀') ? 'P3공장' : 'D1공장';
 }
 
