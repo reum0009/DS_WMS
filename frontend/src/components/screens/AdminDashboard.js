@@ -98,6 +98,16 @@ const inputStyle = {
   boxSizing: 'border-box', outline: 'none',
 };
 const labelStyle = { display: 'block', fontSize: 13, color: '#8b949e', marginBottom: 4 };
+const longTextWrapStyle = {
+  minWidth: 0,
+  maxWidth: '100%',
+  overflowWrap: 'anywhere',
+  wordBreak: 'break-word',
+};
+const preWrapStyle = {
+  ...longTextWrapStyle,
+  whiteSpace: 'pre-wrap',
+};
 const fieldWrap = { marginBottom: 14 };
 
 function Field({ label, children }) {
@@ -4635,6 +4645,7 @@ function PurchaseCartPanel({ showMsg, currentUser }) {
         padding: 14,
         color: result?.error ? '#f85149' : '#c9d1d9',
         fontSize: 13,
+        ...longTextWrapStyle,
       }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'flex-start', flexWrap: 'wrap', marginBottom: 10 }}>
           <div style={{ color: '#e6edf3', fontWeight: 900 }}>진행 상태</div>
@@ -4665,9 +4676,11 @@ function PurchaseCartPanel({ showMsg, currentUser }) {
                 border: '1px solid #21262d',
                 borderRadius: 6,
                 padding: '7px 9px',
+                minWidth: 0,
+                alignItems: 'flex-start',
               }}>
-                <span style={{ color: '#8b949e', fontFamily: 'monospace' }}>{log.at}</span>
-                <span>{log.message}</span>
+                <span style={{ color: '#8b949e', fontFamily: 'monospace', flexShrink: 0 }}>{log.at}</span>
+                <span style={{ ...preWrapStyle, flex: 1 }}>{log.message}</span>
               </div>
             ))}
           </div>
@@ -4680,6 +4693,7 @@ function PurchaseCartPanel({ showMsg, currentUser }) {
             border: `1px solid ${result.lastStep.error ? '#f85149' : '#30363d'}`,
             borderRadius: 6,
             padding: 10,
+            ...preWrapStyle,
           }}>
             {result.lastStep.error || result.lastStep.message}
           </div>
@@ -4694,9 +4708,10 @@ function PurchaseCartPanel({ showMsg, currentUser }) {
       <pre style={{
         margin: 0,
         maxHeight: 180,
-        overflow: 'auto',
-        whiteSpace: 'pre-wrap',
-        wordBreak: 'break-all',
+        maxWidth: '100%',
+        overflowX: 'hidden',
+        overflowY: 'auto',
+        ...preWrapStyle,
         background: '#0d1117',
         border: '1px solid #30363d',
         borderRadius: 6,
@@ -4729,7 +4744,7 @@ function PurchaseCartPanel({ showMsg, currentUser }) {
             fontSize: 12,
           }}>{diagnosticsLoading ? '불러오는 중...' : '다시 불러오기'}</button>
         </div>
-        <div style={{ color: '#8b949e', marginBottom: 8, lineHeight: 1.5 }}>
+        <div style={{ color: '#8b949e', marginBottom: 8, lineHeight: 1.5, ...preWrapStyle }}>
           <div>API: {diagnostics.apiBaseUrl || '-'}</div>
           <div>Health: {diagnostics.health ? JSON.stringify(diagnostics.health) : '-'}</div>
           <div>Bridge log: {diagnostics.bridgeLogPath || '-'}</div>
