@@ -670,6 +670,185 @@ UpdateHistory.belongsTo(User, { as: 'applier', foreignKey: 'appliedBy' });
 sequelize.models = { User, Request, Warehouse, WarehouseNotice, Product, ProductWarehouseStock, SafetyStockRun, ItemCode, GwProductMapping, GwDepartment, GwUser, RequestItem, StockHistory, Category, CategoryWarehouseStock, DeptCustomField, ProductAttribute, Supplier, WarehouseTransfer, WarehouseTransferItem, Invitation, UpdateHistory };
 global.sequelize = sequelize;
 
+const PURCHASE_CATEGORY_STANDARDS = {
+  softwareAssetPath: ['전산', '컴퓨터소프트웨어'],
+  expenseItems: ['소프트웨어이용료', '유지보수료', '클라우드서비스', '호스팅', '보안관제', '그룹웨어이용료', '조립/설치서비스'],
+  softwareAssetItems: ['오피스', '운영체제'],
+  fixtureItems: [
+    ['네트워크허브', '전산 > 집기비품 > 네트워크장비 > 스위치 허브'],
+    ['무선AP', '전산 > 집기비품 > 네트워크장비 > 무선AP'],
+    ['KVM', '전산 > 집기비품 > 네트워크장비 > KVM'],
+    ['마이크', '전산 > 집기비품 > 회의용장비 > 마이크'],
+    ['웹캠', '전산 > 집기비품 > 회의용장비 > 웹캠'],
+    ['스피커', '전산 > 집기비품 > 회의용장비 > 스피커'],
+    ['TV거치대', '전산 > 집기비품 > 영상장비 > TV거치대'],
+  ],
+};
+
+async function ensureCategoryPath(names) {
+  let parentId = null;
+  let parentColor = null;
+  let node = null;
+
+  for (let level = 1; level <= names.length; level += 1) {
+    const name = names[level - 1];
+    node = await Category.findOne({ where: { name, parentId, isActive: true } });
+    if (!node) {
+      const siblings = await Category.count({ where: { parentId } });
+      node = await Category.create({
+        name,
+        level,
+        parentId,
+        color: parentColor,
+        sortOrder: siblings + 1,
+        isActive: true,
+      });
+    }
+    parentId = node.id;
+    parentColor = node.color || parentColor;
+  }
+
+  return node;
+}
+
+async function tableExists(tableName) {
+  const rows = await sequelize.query(
+    `
+    SELECT 1
+    FROM information_schema.TABLES
+    WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = :tableName
+    LIMIT 1
+    `,
+    { replacements: { tableName }, type: Sequelize.QueryTypes.SELECT }
+  );
+  return rows.length > 0;
+}
+
+async function upsertCompuzoneRule({ ruleName, itemName, path, policy, priority, notes }) {
+  if (!(await tableExists('compuzone_wms_category_rules'))) return;
+  const category = path ? await ensureCategoryPath(path.split(' > ')) : null;
+  await sequelize.query(
+    `
+    INSERT INTO compuzone_wms_category_rules (
+      rule_name, match_item_name, match_pattern, target_category_id,
+      target_category_path, stock_policy, priority, is_active, notes
+    ) VALUES (
+      :ruleName, :itemName, NULL, :categoryId,
+      :path, :policy, :priority, 1, :notes
+    )
+    ON DUPLICATE KEY UPDATE
+      match_item_name = VALUES(match_item_name),
+      target_category_id = VALUES(target_category_id),
+      target_category_path = VALUES(target_category_path),
+      stock_policy = VALUES(stock_policy),
+      priority = VALUES(priority),
+      is_active = 1,
+      notes = VALUES(notes)
+    `,
+    {
+      replacements: {
+        ruleName,
+        itemName,
+        categoryId: category?.id || null,
+        path: path || '',
+        policy,
+        priority,
+        notes,
+      },
+    }
+  );
+}
+
+async function remapCompuzoneItems(itemNames, path, policy, status) {
+  if (!(await tableExists('compuzone_wms_product_map')) || !(await tableExists('compuzone_products'))) return;
+  const category = await ensureCategoryPath(path.split(' > '));
+  await sequelize.query(
+    `
+    UPDATE compuzone_wms_product_map m
+    JOIN compuzone_products p ON p.product_uid = m.product_uid
+    SET m.target_category_id = :categoryId,
+        m.target_category_path = :path,
+        m.stock_policy = :policy,
+        m.mapping_status = IF(m.reviewed_at IS NULL, :status, m.mapping_status),
+        m.mapping_reason = IF(m.reviewed_at IS NULL, :reason, m.mapping_reason)
+    WHERE p.item_name IN (:itemNames)
+      AND m.reviewed_at IS NULL
+    `,
+    {
+      replacements: {
+        categoryId: category.id,
+        path,
+        policy,
+        status,
+        reason: '구매 분류 기준 업데이트',
+        itemNames,
+      },
+    }
+  );
+}
+
+async function ensurePurchaseCategoryStandards() {
+  try {
+    const itRoot = await ensureCategoryPath(['전산']);
+    const legacyFixture = await Category.findOne({ where: { name: '집기', parentId: itRoot.id, isActive: true } });
+    const fixture = await Category.findOne({ where: { name: '집기비품', parentId: itRoot.id, isActive: true } });
+    if (legacyFixture && !fixture) await legacyFixture.update({ name: '집기비품' });
+
+    await ensureCategoryPath(['전산', '집기비품']);
+    await ensureCategoryPath(PURCHASE_CATEGORY_STANDARDS.softwareAssetPath);
+    await ensureCategoryPath(['전산', '비용']);
+
+    for (const itemName of PURCHASE_CATEGORY_STANDARDS.expenseItems) {
+      const pathValue = `전산 > 비용 > ${itemName}`;
+      await ensureCategoryPath(pathValue.split(' > '));
+      await upsertCompuzoneRule({
+        ruleName: `expense_${itemName}`,
+        itemName,
+        path: pathValue,
+        policy: 'expense',
+        priority: 15,
+        notes: '비용성 서비스/구독 항목',
+      });
+    }
+    for (const itemName of PURCHASE_CATEGORY_STANDARDS.softwareAssetItems) {
+      await upsertCompuzoneRule({
+        ruleName: `software_asset_${itemName}`,
+        itemName,
+        path: PURCHASE_CATEGORY_STANDARDS.softwareAssetPath.join(' > '),
+        policy: 'non_stock',
+        priority: 20,
+        notes: '컴퓨터소프트웨어 무형자산 항목',
+      });
+    }
+    for (const [itemName, pathValue] of PURCHASE_CATEGORY_STANDARDS.fixtureItems) {
+      await upsertCompuzoneRule({
+        ruleName: `fixture_${itemName}`,
+        itemName,
+        path: pathValue,
+        policy: 'stock',
+        priority: 25,
+        notes: '장기간 사용하는 집기비품 항목',
+      });
+    }
+
+    for (const itemName of PURCHASE_CATEGORY_STANDARDS.expenseItems) {
+      await remapCompuzoneItems([itemName], `전산 > 비용 > ${itemName}`, 'expense', 'expense');
+    }
+    await remapCompuzoneItems(
+      PURCHASE_CATEGORY_STANDARDS.softwareAssetItems,
+      PURCHASE_CATEGORY_STANDARDS.softwareAssetPath.join(' > '),
+      'non_stock',
+      'non_stock'
+    );
+    for (const [itemName, pathValue] of PURCHASE_CATEGORY_STANDARDS.fixtureItems) {
+      await remapCompuzoneItems([itemName], pathValue, 'stock', 'new_candidate');
+    }
+    console.log('Purchase category standards synced');
+  } catch (err) {
+    console.error('Purchase category standards sync error:', err.message);
+  }
+}
+
 // 데이터베이스 동기화 — alter:true 로 새 컬럼/테이블 자동 추가
 // DB 및 테이블 charset 을 utf8mb4 로 강제 설정 후 sync
 async function initDB() {
@@ -680,6 +859,7 @@ async function initDB() {
     );
     await cleanupUsersEmailUniqueIndexes();
     await sequelize.sync({ alter: true });
+    await ensurePurchaseCategoryStandards();
     console.log('Database models synced (utf8mb4)');
   } catch (err) {
     console.error('Database sync error:', err);

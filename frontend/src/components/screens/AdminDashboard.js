@@ -1787,11 +1787,36 @@ const purchaseCompany = (value) => PURCHASE_COMPANIES.find(c => c.value === valu
 const purchaseDelivery = (key) => PURCHASE_DELIVERIES.find(d => d.key === key) || PURCHASE_DELIVERIES[0];
 const purchaseBusinessNumber = (company, value) => company.businessNumbers.find(item => item.value === value) || company.businessNumbers[0] || null;
 
+const SOFTWARE_EXPENSE_MARKERS = [
+  'microsoft 365', 'creative cloud', 'saas', '월구독', '연구독', '구독', '클라우드', '호스팅',
+  '유지보수', '업데이트', '기술지원', '보안관제', '그룹웨어 이용료', '웹서비스', '서비스 이용료',
+  '사용료', 'subscription', 'cloud', 'hosting', 'maintenance', 'support',
+];
+const SOFTWARE_ASSET_MARKERS = [
+  '영구라이선스', '영구 라이선스', '구매형 라이선스', '처음사용자용', '라이선스', 'license',
+  'office', '오피스', '한컴오피스', 'windows', 'win11', '서버 os', '운영체제', 'erp',
+  'dbms', 'autocad', '외주개발', '업무용 프로그램', '소프트웨어',
+];
+const CONSUMABLE_MARKERS = [
+  '용지', '토너', '잉크', '문구', '청소용품', '케이블', '랜선', '젠더', '더미', '플러그',
+  '마우스', '키보드', '마우스패드', '동글', 'usb허브', 'usb hub', '멀티허브', '배터리',
+  '건전지', '소모성 부품', '잡자재',
+];
+const FIXTURE_MARKERS = [
+  '노트북', '아이디어패드', 'thinkpad', '갤럭시북', '그램', 'vivobook', 'zenbook',
+  '데스크탑', '미니 pc', '미니pc', 'pc', '프린터', '복합기', '모니터', '책상', '의자',
+  '캐비닛', '서랍장', '가구', '냉장고', 'tv', '공기청정기', 'ups', '스위칭허브',
+  '스위치허브', '스위치 허브', '네트워크허브', '공유기', '라우터', '무선ap', 'kvm',
+  '거리연장기', '네트워크장비', '마이크', '웹캠', '스피커',
+];
+
 const purchaseDocumentCategory = (product) => {
   const text = [product?.productName, product?.specification, product?.productCode].filter(Boolean).join(' ').toLowerCase();
-  if (['가방', '케이블', '젠더', '더미', '플러그', '마우스', '키보드', '동글', '허브'].some(v => text.includes(v))) return '소모품';
-  if (text.includes('office') || text.includes('windows') || text.includes('소프트웨어') || text.includes('라이선스')) return '컴퓨터소프트웨어';
-  if (['노트북', '아이디어패드', 'thinkpad', '갤럭시북', '그램', 'vivobook', 'zenbook', '데스크탑', '미니 pc', 'pc', '프린터', '복합기', '모니터', '마이크', '웹캠', '스피커'].some(v => text.includes(v))) return '집기비품';
+  if (SOFTWARE_EXPENSE_MARKERS.some(v => text.includes(v))) return '비용';
+  if (SOFTWARE_ASSET_MARKERS.some(v => text.includes(v))) return '컴퓨터소프트웨어';
+  if (FIXTURE_MARKERS.filter(v => v !== 'pc').some(v => text.includes(v))) return '집기비품';
+  if (CONSUMABLE_MARKERS.some(v => text.includes(v))) return '소모품';
+  if (/\bpc\b/.test(text)) return '집기비품';
   return '소모품';
 };
 
@@ -1799,6 +1824,7 @@ const purchaseDocumentLabel = (items) => {
   const categories = (items || []).map(item => purchaseDocumentCategory(item.product || item));
   if (categories.includes('집기비품')) return '집기비품';
   if (categories.includes('컴퓨터소프트웨어')) return '컴퓨터소프트웨어';
+  if (categories.includes('비용')) return '비용';
   return '소모품';
 };
 
