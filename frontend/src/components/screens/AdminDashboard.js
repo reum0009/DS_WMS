@@ -1790,7 +1790,7 @@ const purchaseDocumentCategory = (product) => {
   const text = [product?.productName, product?.specification, product?.productCode].filter(Boolean).join(' ').toLowerCase();
   if (['가방', '케이블', '젠더', '더미', '플러그', '마우스', '키보드', '동글', '허브'].some(v => text.includes(v))) return '소모품';
   if (text.includes('office') || text.includes('windows') || text.includes('소프트웨어') || text.includes('라이선스')) return '컴퓨터소프트웨어';
-  if (['노트북', '아이디어패드', 'thinkpad', '갤럭시북', '그램', 'vivobook', 'zenbook', '데스크탑', '미니 pc', 'pc', '프린터', '복합기', '모니터'].some(v => text.includes(v))) return '집기비품';
+  if (['노트북', '아이디어패드', 'thinkpad', '갤럭시북', '그램', 'vivobook', 'zenbook', '데스크탑', '미니 pc', 'pc', '프린터', '복합기', '모니터', '마이크', '웹캠', '스피커'].some(v => text.includes(v))) return '집기비품';
   return '소모품';
 };
 
@@ -4185,6 +4185,7 @@ function PurchaseCartPanel({ showMsg, currentUser }) {
     memo: '',
     allowPartial: false,
   });
+  const [assetRecipients, setAssetRecipients] = useState({});
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -4302,6 +4303,13 @@ function PurchaseCartPanel({ showMsg, currentUser }) {
   };
 
   const openPurchaseWorkflow = () => {
+    if (assetRecipientErrors.length) {
+      const message = assetRecipientErrors[0];
+      setResult({ error: message });
+      appendWorkflowLog(message, 'error');
+      showMsg(message, 'error');
+      return;
+    }
     setPurchaseModalOpen(true);
     setSoldOutDecision(null);
     setWorkflowLog([]);
@@ -4319,12 +4327,20 @@ function PurchaseCartPanel({ showMsg, currentUser }) {
     businessContactName: selectedDelivery.businessContactName,
     requester: form.requester,
     memo: form.memo,
+    assetRecipients,
     allowPartial: form.allowPartial,
   });
 
   const createPurchaseJob = async () => {
     if ((split.manual.length || split.blocked.length) && !form.allowPartial) {
       const message = '컴퓨존 자동구매가 안 되는 항목이 포함되어 있습니다. 컴퓨존 상품만 먼저 진행하려면 옵션을 켜세요.';
+      setResult({ error: message });
+      appendWorkflowLog(message, 'error');
+      showMsg(message, 'error');
+      throw new Error(message);
+    }
+    if (assetRecipientErrors.length) {
+      const message = assetRecipientErrors[0];
       setResult({ error: message });
       appendWorkflowLog(message, 'error');
       showMsg(message, 'error');
@@ -4371,6 +4387,45 @@ function PurchaseCartPanel({ showMsg, currentUser }) {
     });
     return { compuzone, manual, blocked };
   }, [cart.items]);
+  const assetRecipientItems = useMemo(
+    () => split.compuzone.filter(item => purchaseDocumentCategory(item.product) !== '소모품'),
+    [split.compuzone]
+  );
+  const assetRecipientErrors = useMemo(() => {
+    return assetRecipientItems
+      .map(item => {
+        const row = assetRecipients[String(item.cartItemId)] || {};
+        if (String(row.department || '').trim() && String(row.user || '').trim() && String(row.purpose || '').trim()) {
+          return '';
+        }
+        return `${item.product?.productName || '집기비품'} 지급대상 부서/사용자/용도를 입력하세요.`;
+      })
+      .filter(Boolean);
+  }, [assetRecipientItems, assetRecipients]);
+
+  useEffect(() => {
+    const validKeys = new Set(assetRecipientItems.map(item => String(item.cartItemId)));
+    setAssetRecipients(current => {
+      const next = {};
+      let changed = false;
+      for (const [key, value] of Object.entries(current)) {
+        if (validKeys.has(key)) next[key] = value;
+        else changed = true;
+      }
+      return changed ? next : current;
+    });
+  }, [assetRecipientItems]);
+
+  const updateAssetRecipient = (item, field, value) => {
+    const key = String(item.cartItemId);
+    setAssetRecipients(current => ({
+      ...current,
+      [key]: {
+        ...(current[key] || {}),
+        [field]: value,
+      },
+    }));
+  };
 
   const selectedCompany = useMemo(() => purchaseCompany(form.corp), [form.corp]);
   const selectedDelivery = useMemo(() => purchaseDelivery(form.deliveryKey), [form.deliveryKey]);
@@ -4897,6 +4952,32 @@ function PurchaseCartPanel({ showMsg, currentUser }) {
               <Field label="요청자 *">
                 <input value={form.requester} onChange={e => setForm(f => ({ ...f, requester: e.target.value }))} style={inputStyle} />
               </Field>
+              {assetRecipientItems.length > 0 && (
+                <div style={{ marginBottom: 14 }}>
+                  <div style={{ color: '#8b949e', fontSize: 12, fontWeight: 700, marginBottom: 8 }}>지급대상 *</div>
+                  <div style={{ display: 'grid', gap: 8 }}>
+                    {assetRecipientItems.map(item => {
+                      const row = assetRecipients[String(item.cartItemId)] || {};
+                      const product = item.product || {};
+                      return (
+                        <div key={item.cartItemId} style={{ border: '1px solid #30363d', borderRadius: 6, padding: 10, background: '#0d1117' }}>
+                          <div style={{ color: '#e6edf3', fontWeight: 700, fontSize: 12, marginBottom: 8, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                            {product.productName || product.productCode || '집기비품'}
+                          </div>
+                          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 8 }}>
+                            <input value={row.department || ''} onChange={e => updateAssetRecipient(item, 'department', e.target.value)} style={{ ...inputStyle, padding: '7px 8px', fontSize: 12 }} placeholder="부서" />
+                            <input value={row.user || ''} onChange={e => updateAssetRecipient(item, 'user', e.target.value)} style={{ ...inputStyle, padding: '7px 8px', fontSize: 12 }} placeholder="사용자" />
+                            <input value={row.purpose || ''} onChange={e => updateAssetRecipient(item, 'purpose', e.target.value)} style={{ ...inputStyle, padding: '7px 8px', fontSize: 12 }} placeholder="용도" />
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                  {assetRecipientErrors.length > 0 && (
+                    <div style={{ color: '#f85149', fontSize: 12, lineHeight: 1.5, marginTop: 8 }}>{assetRecipientErrors[0]}</div>
+                  )}
+                </div>
+              )}
               <Field label="메모">
                 <textarea value={form.memo} onChange={e => setForm(f => ({ ...f, memo: e.target.value }))} style={{ ...inputStyle, minHeight: 86, resize: 'vertical' }} placeholder="공장/부서/대상자/용도 등" />
               </Field>

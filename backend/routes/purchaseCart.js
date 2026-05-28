@@ -565,7 +565,7 @@ function documentCategoryForItem(item) {
   if (text.includes('office') || text.includes('windows') || text.includes('소프트웨어') || text.includes('라이선스')) {
     return '컴퓨터소프트웨어';
   }
-  const fixtureMarkers = ['노트북', '아이디어패드', 'thinkpad', '갤럭시북', '그램', 'vivobook', 'zenbook', '데스크탑', '미니 pc', 'pc', '프린터', '복합기', '모니터'];
+  const fixtureMarkers = ['노트북', '아이디어패드', 'thinkpad', '갤럭시북', '그램', 'vivobook', 'zenbook', '데스크탑', '미니 pc', 'pc', '프린터', '복합기', '모니터', '마이크', '웹캠', '스피커'];
   if (fixtureMarkers.some(marker => text.includes(marker))) return '집기비품';
   return '소모품';
 }
@@ -616,15 +616,24 @@ function purchaseMemo(body) {
 }
 
 function purchaseAutoPayload({ body, compuzoneItems }) {
+  const assetRecipients = body.assetRecipients && typeof body.assetRecipients === 'object' ? body.assetRecipients : {};
+  const clean = value => String(value || '').trim();
   return {
     corp: String(body.corp || '').trim(),
     title: purchaseTitle({ body, compuzoneItems }),
     requester: String(body.requester || '').trim(),
     memo: purchaseMemo(body),
-    items: compuzoneItems.map((item) => ({
-      url: item.product.source.productUrl,
-      quantity: item.quantity,
-    })),
+    items: compuzoneItems.map((item) => {
+      const recipient = assetRecipients[String(item.cartItemId)] || {};
+      return {
+        url: item.product.source.productUrl,
+        quantity: item.quantity,
+        asset_department: clean(recipient.department || recipient.asset_department),
+        asset_user: clean(recipient.user || recipient.asset_user),
+        asset_purpose: clean(recipient.purpose || recipient.asset_purpose),
+        asset_note: clean(recipient.note || recipient.asset_note),
+      };
+    }),
   };
 }
 
@@ -854,13 +863,22 @@ function selectedCompuzoneAccount(value) {
   return '';
 }
 
-function validatePurchasePayload(payload, body = {}) {
+function validatePurchasePayload(payload, body = {}, compuzoneItems = []) {
   if (!payload.corp) return '법인/회사 구분을 입력하세요.';
   if (!payload.title) return '품의 제목을 입력하세요.';
   if (!String(body.deliveryName || '').trim()) return '배송지를 선택하세요.';
   if (!String(body.businessNumber || '').trim()) return '사업자번호를 선택하세요.';
   if (!payload.requester) return '요청자를 입력하세요.';
   if (!payload.items.length) return '컴퓨존 자동구매 가능 상품이 없습니다.';
+  for (let index = 0; index < compuzoneItems.length; index += 1) {
+    const cartItem = compuzoneItems[index];
+    if (documentCategoryForItem(cartItem) === '소모품') continue;
+    const item = payload.items[index] || {};
+    if (!item.asset_department || !item.asset_user || !item.asset_purpose) {
+      const name = cartItem?.product?.productName || cartItem?.product?.source?.productNo || `${index + 1}번 상품`;
+      return `집기비품/소프트웨어 지급대상 정보를 입력하세요: ${name}의 부서, 사용자, 용도`;
+    }
+  }
   return null;
 }
 
@@ -1073,7 +1091,7 @@ router.post('/checkout', roleAuth(WRITE_ROLES), async (req, res) => {
     }
 
     const payload = purchaseAutoPayload({ body: req.body || {}, compuzoneItems: split.compuzone });
-    const validationError = validatePurchasePayload(payload, req.body || {});
+    const validationError = validatePurchasePayload(payload, req.body || {}, split.compuzone);
     if (validationError) return res.status(400).json({ error: validationError, split });
 
     const { response, data } = await purchaseAutoRequest('/api/purchase-jobs', {
