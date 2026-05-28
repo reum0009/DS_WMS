@@ -666,23 +666,58 @@ function purchaseMemo(body) {
   return lines.filter(Boolean).join('\n');
 }
 
+function cleanRecipientText(value) {
+  return String(value || '').trim();
+}
+
+function cartItemQuantity(item) {
+  return Math.max(1, parseInt(item?.quantity, 10) || 1);
+}
+
+function assetRecipientKey(item, unitIndex) {
+  return `${item.cartItemId}:${unitIndex}`;
+}
+
+function assetRecipientFor(assetRecipients, item, unitIndex) {
+  const key = assetRecipientKey(item, unitIndex);
+  const legacyKey = String(item.cartItemId);
+  return assetRecipients[key] || (unitIndex === 0 ? assetRecipients[legacyKey] : null) || {};
+}
+
+function normalizeAssetRecipient(row) {
+  return {
+    department: cleanRecipientText(row.department || row.asset_department),
+    user: cleanRecipientText(row.user || row.asset_user),
+    purpose: cleanRecipientText(row.purpose || row.asset_purpose),
+    note: cleanRecipientText(row.note || row.asset_note),
+  };
+}
+
+function assetRecipientListForItem(assetRecipients, item) {
+  if (documentCategoryForItem(item) === '소모품') return [];
+  return Array.from({ length: cartItemQuantity(item) }, (_, unitIndex) =>
+    normalizeAssetRecipient(assetRecipientFor(assetRecipients, item, unitIndex))
+  );
+}
+
 function purchaseAutoPayload({ body, compuzoneItems }) {
   const assetRecipients = body.assetRecipients && typeof body.assetRecipients === 'object' ? body.assetRecipients : {};
-  const clean = value => String(value || '').trim();
   return {
-    corp: String(body.corp || '').trim(),
+    corp: cleanRecipientText(body.corp),
     title: purchaseTitle({ body, compuzoneItems }),
-    requester: String(body.requester || '').trim(),
+    requester: cleanRecipientText(body.requester),
     memo: purchaseMemo(body),
     items: compuzoneItems.map((item) => {
-      const recipient = assetRecipients[String(item.cartItemId)] || {};
+      const recipientList = assetRecipientListForItem(assetRecipients, item);
+      const firstRecipient = recipientList[0] || {};
       return {
         url: item.product.source.productUrl,
         quantity: item.quantity,
-        asset_department: clean(recipient.department || recipient.asset_department),
-        asset_user: clean(recipient.user || recipient.asset_user),
-        asset_purpose: clean(recipient.purpose || recipient.asset_purpose),
-        asset_note: clean(recipient.note || recipient.asset_note),
+        asset_department: firstRecipient.department || '',
+        asset_user: firstRecipient.user || '',
+        asset_purpose: firstRecipient.purpose || '',
+        asset_note: firstRecipient.note || '',
+        asset_recipients: recipientList,
       };
     }),
   };
@@ -921,13 +956,18 @@ function validatePurchasePayload(payload, body = {}, compuzoneItems = []) {
   if (!String(body.businessNumber || '').trim()) return '사업자번호를 선택하세요.';
   if (!payload.requester) return '요청자를 입력하세요.';
   if (!payload.items.length) return '컴퓨존 자동구매 가능 상품이 없습니다.';
+  const assetRecipients = body.assetRecipients && typeof body.assetRecipients === 'object' ? body.assetRecipients : {};
   for (let index = 0; index < compuzoneItems.length; index += 1) {
     const cartItem = compuzoneItems[index];
     if (documentCategoryForItem(cartItem) === '소모품') continue;
-    const item = payload.items[index] || {};
-    if (!item.asset_department || !item.asset_user || !item.asset_purpose) {
-      const name = cartItem?.product?.productName || cartItem?.product?.source?.productNo || `${index + 1}번 상품`;
-      return `비소모품 지급대상 정보를 입력하세요: ${name}의 부서, 사용자, 용도`;
+    const quantity = cartItemQuantity(cartItem);
+    for (let unitIndex = 0; unitIndex < quantity; unitIndex += 1) {
+      const recipient = normalizeAssetRecipient(assetRecipientFor(assetRecipients, cartItem, unitIndex));
+      if (!recipient.department || !recipient.user || !recipient.purpose) {
+        const name = cartItem?.product?.productName || cartItem?.product?.source?.productNo || `${index + 1}번 상품`;
+        const suffix = quantity > 1 ? ` ${unitIndex + 1}/${quantity}` : '';
+        return `비소모품 지급대상 정보를 입력하세요: ${name}${suffix}의 부서, 사용자, 용도`;
+      }
     }
   }
   return null;

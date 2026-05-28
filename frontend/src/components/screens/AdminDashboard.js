@@ -4420,33 +4420,53 @@ function PurchaseCartPanel({ showMsg, currentUser }) {
     () => split.compuzone.filter(item => purchaseDocumentCategory(item.product) !== '소모품'),
     [split.compuzone]
   );
+  const assetRecipientUnits = useMemo(
+    () => assetRecipientItems.flatMap(item => {
+      const quantity = Math.max(1, parseInt(item.quantity, 10) || 1);
+      return Array.from({ length: quantity }, (_, unitIndex) => ({
+        item,
+        unitIndex,
+        quantity,
+        key: `${item.cartItemId}:${unitIndex}`,
+      }));
+    }),
+    [assetRecipientItems]
+  );
   const assetRecipientErrors = useMemo(() => {
-    return assetRecipientItems
-      .map(item => {
-        const row = assetRecipients[String(item.cartItemId)] || {};
+    return assetRecipientUnits
+      .map(unit => {
+        const legacyRow = unit.unitIndex === 0 ? assetRecipients[String(unit.item.cartItemId)] : null;
+        const row = assetRecipients[unit.key] || legacyRow || {};
         if (String(row.department || '').trim() && String(row.user || '').trim() && String(row.purpose || '').trim()) {
           return '';
         }
-        return `${item.product?.productName || '집기비품'} 지급대상 부서/사용자/용도를 입력하세요.`;
+        const suffix = unit.quantity > 1 ? ` ${unit.unitIndex + 1}/${unit.quantity}` : '';
+        return `${unit.item.product?.productName || '집기비품'}${suffix} 지급대상 부서/사용자/용도를 입력하세요.`;
       })
       .filter(Boolean);
-  }, [assetRecipientItems, assetRecipients]);
+  }, [assetRecipientUnits, assetRecipients]);
 
   useEffect(() => {
-    const validKeys = new Set(assetRecipientItems.map(item => String(item.cartItemId)));
+    const validKeys = new Set(assetRecipientUnits.map(unit => unit.key));
     setAssetRecipients(current => {
       const next = {};
       let changed = false;
       for (const [key, value] of Object.entries(current)) {
         if (validKeys.has(key)) next[key] = value;
-        else changed = true;
+        else {
+          const migratedKey = key.includes(':') ? '' : `${key}:0`;
+          if (migratedKey && validKeys.has(migratedKey) && !next[migratedKey]) {
+            next[migratedKey] = value;
+          }
+          changed = true;
+        }
       }
       return changed ? next : current;
     });
-  }, [assetRecipientItems]);
+  }, [assetRecipientUnits]);
 
-  const updateAssetRecipient = (item, field, value) => {
-    const key = String(item.cartItemId);
+  const updateAssetRecipient = (unit, field, value) => {
+    const key = unit.key;
     setAssetRecipients(current => ({
       ...current,
       [key]: {
@@ -4986,22 +5006,25 @@ function PurchaseCartPanel({ showMsg, currentUser }) {
               <Field label="요청자 *">
                 <input value={form.requester} onChange={e => setForm(f => ({ ...f, requester: e.target.value }))} style={inputStyle} />
               </Field>
-              {assetRecipientItems.length > 0 && (
+              {assetRecipientUnits.length > 0 && (
                 <div style={{ marginBottom: 14 }}>
                   <div style={{ color: '#8b949e', fontSize: 12, fontWeight: 700, marginBottom: 8 }}>지급대상 *</div>
                   <div style={{ display: 'grid', gap: 8 }}>
-                    {assetRecipientItems.map(item => {
-                      const row = assetRecipients[String(item.cartItemId)] || {};
+                    {assetRecipientUnits.map(unit => {
+                      const legacyRow = unit.unitIndex === 0 ? assetRecipients[String(unit.item.cartItemId)] : null;
+                      const row = assetRecipients[unit.key] || legacyRow || {};
+                      const item = unit.item;
                       const product = item.product || {};
                       return (
-                        <div key={item.cartItemId} style={{ border: '1px solid #30363d', borderRadius: 6, padding: 10, background: '#0d1117' }}>
+                        <div key={unit.key} style={{ border: '1px solid #30363d', borderRadius: 6, padding: 10, background: '#0d1117' }}>
                           <div style={{ color: '#e6edf3', fontWeight: 700, fontSize: 12, marginBottom: 8, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
                             {product.productName || product.productCode || '집기비품'}
+                            {unit.quantity > 1 ? ` ${unit.unitIndex + 1}/${unit.quantity}` : ''}
                           </div>
                           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 8 }}>
-                            <input value={row.department || ''} onChange={e => updateAssetRecipient(item, 'department', e.target.value)} style={{ ...inputStyle, padding: '7px 8px', fontSize: 12 }} placeholder="부서" />
-                            <input value={row.user || ''} onChange={e => updateAssetRecipient(item, 'user', e.target.value)} style={{ ...inputStyle, padding: '7px 8px', fontSize: 12 }} placeholder="사용자" />
-                            <input value={row.purpose || ''} onChange={e => updateAssetRecipient(item, 'purpose', e.target.value)} style={{ ...inputStyle, padding: '7px 8px', fontSize: 12 }} placeholder="용도" />
+                            <input value={row.department || ''} onChange={e => updateAssetRecipient(unit, 'department', e.target.value)} style={{ ...inputStyle, padding: '7px 8px', fontSize: 12 }} placeholder="부서" />
+                            <input value={row.user || ''} onChange={e => updateAssetRecipient(unit, 'user', e.target.value)} style={{ ...inputStyle, padding: '7px 8px', fontSize: 12 }} placeholder="사용자" />
+                            <input value={row.purpose || ''} onChange={e => updateAssetRecipient(unit, 'purpose', e.target.value)} style={{ ...inputStyle, padding: '7px 8px', fontSize: 12 }} placeholder="용도" />
                           </div>
                         </div>
                       );
