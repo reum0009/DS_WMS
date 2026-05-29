@@ -604,9 +604,9 @@ const FACTORY_BY_BUSINESS_NUMBER = {
   '4038507607': 'D2공장',
   '4038523311': 'D3공장',
   '1258132697': 'P1공장',
-  '4038515640': 'P2공장',
-  '8448500770': 'P3공장',
-  '1188507029': 'P4공장',
+  '4038515640': 'P3공장',
+  '8448500770': 'P4공장',
+  '1188507029': 'P2공장',
   '1258151622': '일강1공장',
   '4038520895': '일강2공장',
 };
@@ -713,6 +713,8 @@ function purchaseAutoPayload({ body, compuzoneItems }) {
       return {
         url: item.product.source.productUrl,
         quantity: item.quantity,
+        product_name: cleanRecipientText(item.product.productName),
+        product_specification: cleanRecipientText(item.product.specification || item.product.productCode),
         asset_department: firstRecipient.department || '',
         asset_user: firstRecipient.user || '',
         asset_purpose: firstRecipient.purpose || '',
