@@ -4204,6 +4204,7 @@ function PurchaseCartPanel({ showMsg, currentUser }) {
     compuzoneAccount: 'ds1500',
     groupwareLoginId: '',
     groupwareLoginPassword: '',
+    approvalBodyPreview: false,
   });
   const [form, setForm] = useState({
     corp: '대승정밀',
@@ -4417,6 +4418,50 @@ function PurchaseCartPanel({ showMsg, currentUser }) {
     }
   };
 
+  const escapePreviewHtml = (value) => String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+
+  const approvalPreviewDocument = (title, bodyHtml) => `<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8" />
+  <title>${escapePreviewHtml(title || '그룹웨어 품의 본문 미리보기')}</title>
+  <style>
+    body { margin: 0; background: #f3f4f6; color: #111827; font-family: Arial, 'Malgun Gothic', sans-serif; }
+    .preview-shell { max-width: 1180px; margin: 0 auto; padding: 24px; }
+    .preview-title { margin: 0 0 14px; font-size: 20px; font-weight: 800; }
+    .preview-body { background: #fff; border: 1px solid #d1d5db; padding: 28px; min-height: 720px; box-shadow: 0 10px 30px rgba(15, 23, 42, 0.08); }
+  </style>
+</head>
+<body>
+  <main class="preview-shell">
+    <h1 class="preview-title">${escapePreviewHtml(title || '그룹웨어 품의 본문 미리보기')}</h1>
+    <section class="preview-body">${bodyHtml || ''}</section>
+  </main>
+</body>
+</html>`;
+
+  const openApprovalPreviewWindow = () => {
+    const win = window.open('', '_blank', 'width=1180,height=900,scrollbars=yes,resizable=yes');
+    if (!win) throw new Error('미리보기 창을 열 수 없습니다. 브라우저 팝업 차단을 허용하세요.');
+    win.opener = null;
+    win.document.open();
+    win.document.write(approvalPreviewDocument('그룹웨어 품의 본문 미리보기', '<div style="font-size:14px;color:#4b5563;">품의 본문을 생성하는 중입니다.</div>'));
+    win.document.close();
+    return win;
+  };
+
+  const writeApprovalPreviewWindow = (win, title, bodyHtml) => {
+    if (!win || win.closed) return;
+    win.document.open();
+    win.document.write(approvalPreviewDocument(title, bodyHtml));
+    win.document.close();
+  };
+
   const split = useMemo(() => {
     const compuzone = [];
     const manual = [];
@@ -4547,7 +4592,62 @@ function PurchaseCartPanel({ showMsg, currentUser }) {
     return source.type === 'compuzone' && source.productUrl && source.isPurchasable;
   });
 
+  const requireGroupwareCredentials = () => {
+    if (!automationForm.groupwareLoginId.trim() || !automationForm.groupwareLoginPassword.trim()) {
+      const message = '그룹웨어 계정과 비밀번호를 입력하세요.';
+      appendWorkflowLog(message, 'error');
+      showMsg(message, 'error');
+      return false;
+    }
+    return true;
+  };
+
+  const recordPurchaseStepSuccess = (step, label, data) => {
+    const nextJob = data?.job || data;
+    setResult(current => ({
+      ...(current || {}),
+      purchaseJob: nextJob,
+      purchaseAutoHealth: data.purchaseAutoHealth || current?.purchaseAutoHealth || null,
+      lastStep: {
+        step,
+        label,
+        message: data?.message || `${label} 완료`,
+      },
+    }));
+    appendWorkflowLog(data?.message || `${label} 완료`, 'success');
+    return nextJob;
+  };
+
+  const previewApprovalBody = async (jobId, previewWindow) => {
+    appendWorkflowLog('그룹웨어 품의 본문 미리보기 생성');
+    const response = await purchaseCartAPI.approvalPreview(jobId);
+    const data = response.data || {};
+    writeApprovalPreviewWindow(previewWindow, data.title, data.body_html);
+    appendWorkflowLog('그룹웨어 품의 본문 미리보기 창을 열었습니다.', 'success');
+  };
+
+  const submitGroupwareApproval = async (jobId) => {
+    appendWorkflowLog('그룹웨어 품의 상신 시작');
+    const response = await purchaseCartAPI.submitApproval(jobId, {
+      groupwareLoginId: automationForm.groupwareLoginId,
+      groupwareLoginPassword: automationForm.groupwareLoginPassword,
+    });
+    return recordPurchaseStepSuccess('submit-approval', '그룹웨어 품의 상신', response.data || {});
+  };
+
   const continueWithoutSoldOut = async () => {
+    if (!requireGroupwareCredentials()) return;
+    let previewWindow = null;
+    if (automationForm.approvalBodyPreview) {
+      try {
+        previewWindow = openApprovalPreviewWindow();
+      } catch (e) {
+        showMsg(e.message, 'error');
+        appendWorkflowLog(e.message, 'error');
+        return;
+      }
+    }
+
     setRunningStep('sold-out-continue');
     try {
       const { nextCart, targets } = await removeSoldOutCartItems();
@@ -4559,6 +4659,9 @@ function PurchaseCartPanel({ showMsg, currentUser }) {
 
       if (!hasPurchasableCompuzoneItem(nextCart.items || [])) {
         const message = '품절 상품을 제외하면 구매 가능한 컴퓨존 상품이 없습니다.';
+        if (previewWindow) {
+          writeApprovalPreviewWindow(previewWindow, '그룹웨어 품의 본문 미리보기 실패', `<div style="color:#dc2626;font-weight:700;">${escapePreviewHtml(message)}</div>`);
+        }
         appendWorkflowLog(message, 'error');
         showMsg(message, 'error');
         return;
@@ -4580,22 +4683,18 @@ function PurchaseCartPanel({ showMsg, currentUser }) {
       appendWorkflowLog('컴퓨존 주문/견적 실행 시작');
       const response = await purchaseCartAPI.runCompuzoneOrder(job.job_id, { compuzoneAccount: automationForm.compuzoneAccount });
       const data = response.data || {};
-      const nextJob = data?.job || data;
-      setResult(current => ({
-        ...(current || {}),
-        purchaseJob: nextJob,
-        purchaseAutoHealth: data.purchaseAutoHealth || current?.purchaseAutoHealth || null,
-        lastStep: {
-          step: 'run-compuzone-order',
-          label: '컴퓨존 주문/견적 실행',
-          message: data?.message || '컴퓨존 주문/견적 실행 완료',
-        },
-      }));
-      appendWorkflowLog(data?.message || '컴퓨존 주문/견적 실행 완료', 'success');
-      showMsg('품절 상품을 제외하고 나머지 구매를 진행했습니다');
+      const nextJob = recordPurchaseStepSuccess('run-compuzone-order', '컴퓨존 주문/견적 실행', data);
+      if (automationForm.approvalBodyPreview) {
+        await previewApprovalBody(nextJob.job_id, previewWindow);
+      }
+      await submitGroupwareApproval(nextJob.job_id);
+      showMsg('품절 상품을 제외하고 나머지 구매와 품의를 진행했습니다');
     } catch (e) {
       const detail = e.response?.data?.purchaseAutoError;
       const message = detail?.message || e.response?.data?.error || e.message || '품절 상품 제외 후 구매 진행 실패';
+      if (previewWindow) {
+        writeApprovalPreviewWindow(previewWindow, '그룹웨어 품의 본문 미리보기 실패', `<div style="color:#dc2626;font-weight:700;">${escapePreviewHtml(message)}</div>`);
+      }
       if (detail?.code === 'SOLD_OUT_PRODUCT') {
         const items = findCartItemsByCompuzoneError(detail);
         setSoldOutDecision({ ...detail, items });
@@ -4636,74 +4735,58 @@ function PurchaseCartPanel({ showMsg, currentUser }) {
     }
   };
 
-  const runPurchaseAutoStep = async (step, label) => {
-    let activeJob = purchaseJob;
-    if (step === 'run-compuzone-order' && !activeJob?.job_id) {
+  const runPurchaseAndApproval = async () => {
+    if (!requireGroupwareCredentials()) return;
+
+    let previewWindow = null;
+    if (automationForm.approvalBodyPreview) {
       try {
-        activeJob = await createPurchaseJob();
-      } catch (_) {
+        previewWindow = openApprovalPreviewWindow();
+      } catch (e) {
+        showMsg(e.message, 'error');
+        appendWorkflowLog(e.message, 'error');
         return;
       }
     }
 
-    const activeJobId = activeJob?.job_id || purchaseJobId;
-    if (!activeJobId) {
-      const message = '먼저 컴퓨존 주문/견적 실행으로 구매 요청을 생성하세요.';
-      appendWorkflowLog(message, 'error');
-      showMsg(message, 'error');
-      return;
-    }
-    if (step === 'submit-approval') {
-      if (!purchaseJob?.order_no || !purchaseJob?.quote_pdf_path) {
-        const message = '먼저 컴퓨존 주문/견적 실행을 완료하세요.';
-        appendWorkflowLog(message, 'error');
-        showMsg(message, 'error');
-        return;
-      }
-      if (!automationForm.groupwareLoginId.trim() || !automationForm.groupwareLoginPassword.trim()) {
-        const message = '그룹웨어 계정과 비밀번호를 입력하세요.';
-        appendWorkflowLog(message, 'error');
-        showMsg(message, 'error');
-        return;
-      }
-    }
-
-    setRunningStep(step);
-    if (step === 'run-compuzone-order') setSoldOutDecision(null);
-    appendWorkflowLog(`${label} 시작`);
+    setRunningStep('purchase-and-approval');
+    setSoldOutDecision(null);
     try {
-      const response = step === 'run-compuzone-order'
-        ? await purchaseCartAPI.runCompuzoneOrder(activeJobId, { compuzoneAccount: automationForm.compuzoneAccount })
-        : await purchaseCartAPI.submitApproval(activeJobId, {
-            groupwareLoginId: automationForm.groupwareLoginId,
-            groupwareLoginPassword: automationForm.groupwareLoginPassword,
-          });
-      const data = response.data || {};
-      const nextJob = data?.job || data;
-      setResult(current => ({
-        ...(current || {}),
-        purchaseJob: nextJob,
-        purchaseAutoHealth: data.purchaseAutoHealth || current?.purchaseAutoHealth || null,
-        lastStep: {
-          step,
-          label,
-          message: data?.message || `${label} 완료`,
-        },
-      }));
-      appendWorkflowLog(data?.message || `${label} 완료`, 'success');
-      showMsg(data?.message || `${label} 완료`);
+      let activeJob = purchaseJob;
+      if (!activeJob?.job_id) {
+        activeJob = await createPurchaseJob();
+      }
+
+      let jobForApproval = activeJob;
+      if (!jobForApproval?.order_no || !jobForApproval?.quote_pdf_path) {
+        appendWorkflowLog('컴퓨존 주문/견적 실행 시작');
+        const orderResponse = await purchaseCartAPI.runCompuzoneOrder(jobForApproval.job_id, {
+          compuzoneAccount: automationForm.compuzoneAccount,
+        });
+        jobForApproval = recordPurchaseStepSuccess('run-compuzone-order', '컴퓨존 주문/견적 실행', orderResponse.data || {});
+      }
+
+      if (automationForm.approvalBodyPreview) {
+        await previewApprovalBody(jobForApproval.job_id, previewWindow);
+      }
+
+      await submitGroupwareApproval(jobForApproval.job_id);
+      showMsg('컴퓨존 주문/견적 실행과 그룹웨어 품의 상신이 완료되었습니다.');
     } catch (e) {
       const detail = e.response?.data?.purchaseAutoError;
-      const message = detail?.message || e.response?.data?.error || e?.message || `${label} 실패`;
-      if (step === 'run-compuzone-order' && detail?.code === 'SOLD_OUT_PRODUCT') {
+      const message = detail?.message || e.response?.data?.error || e?.message || '구매 & 품의 진행 실패';
+      if (previewWindow) {
+        writeApprovalPreviewWindow(previewWindow, '그룹웨어 품의 본문 미리보기 실패', `<div style="color:#dc2626;font-weight:700;">${escapePreviewHtml(message)}</div>`);
+      }
+      if (detail?.code === 'SOLD_OUT_PRODUCT') {
         const items = findCartItemsByCompuzoneError(detail);
         setSoldOutDecision({ ...detail, items });
       }
       setResult(current => ({
         ...(current || {}),
         lastStep: {
-          step,
-          label,
+          step: 'purchase-and-approval',
+          label: '구매 & 품의 진행',
           error: message,
         },
       }));
@@ -5123,20 +5206,22 @@ function PurchaseCartPanel({ showMsg, currentUser }) {
               <input type="password" value={automationForm.groupwareLoginPassword} onChange={e => setAutomationForm(f => ({ ...f, groupwareLoginPassword: e.target.value }))} style={inputStyle} placeholder="비밀번호" />
             </Field>
           </div>
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, marginTop: 4 }}>
-            <button onClick={() => runPurchaseAutoStep('run-compuzone-order', '컴퓨존 주문/견적 실행')} disabled={!!runningStep || saving || !!soldOutDecision || split.compuzone.length === 0} style={{
-              background: runningStep || saving || soldOutDecision || split.compuzone.length === 0 ? '#30363d' : '#1f6feb',
-              border: `1px solid ${runningStep || saving || soldOutDecision || split.compuzone.length === 0 ? '#444c56' : '#58a6ff'}`,
-              color: '#fff', padding: '10px 14px', borderRadius: 6,
-              cursor: runningStep || saving || soldOutDecision || split.compuzone.length === 0 ? 'not-allowed' : 'pointer', fontSize: 14, fontWeight: 800,
-            }}>{runningStep === 'run-compuzone-order' || saving ? '주문/견적 진행 중...' : '컴퓨존 주문/견적 실행'}</button>
-            <button onClick={() => runPurchaseAutoStep('submit-approval', '그룹웨어 품의 상신')} disabled={!!runningStep || !purchaseJob?.order_no || !purchaseJob?.quote_pdf_path} style={{
-              background: runningStep || !purchaseJob?.order_no || !purchaseJob?.quote_pdf_path ? '#30363d' : '#238636',
-              border: `1px solid ${runningStep || !purchaseJob?.order_no || !purchaseJob?.quote_pdf_path ? '#444c56' : '#2ea043'}`,
-              color: '#fff', padding: '10px 14px', borderRadius: 6,
-              cursor: runningStep || !purchaseJob?.order_no || !purchaseJob?.quote_pdf_path ? 'not-allowed' : 'pointer', fontSize: 14, fontWeight: 800,
-            }}>{runningStep === 'submit-approval' ? '품의 상신 중...' : '그룹웨어 품의 상신'}</button>
-          </div>
+          <label style={{ display: 'flex', alignItems: 'center', gap: 8, color: '#c9d1d9', fontSize: 13, margin: '2px 0 12px' }}>
+            <input
+              type="checkbox"
+              checked={automationForm.approvalBodyPreview}
+              onChange={e => setAutomationForm(f => ({ ...f, approvalBodyPreview: e.target.checked }))}
+              style={{ accentColor: '#58a6ff' }}
+            />
+            그룹웨어 품의 본문 미리보기
+          </label>
+          <button onClick={runPurchaseAndApproval} disabled={!!runningStep || saving || !!soldOutDecision || split.compuzone.length === 0} style={{
+            width: '100%',
+            background: runningStep || saving || soldOutDecision || split.compuzone.length === 0 ? '#30363d' : '#238636',
+            border: `1px solid ${runningStep || saving || soldOutDecision || split.compuzone.length === 0 ? '#444c56' : '#2ea043'}`,
+            color: '#fff', padding: '11px 14px', borderRadius: 6,
+            cursor: runningStep || saving || soldOutDecision || split.compuzone.length === 0 ? 'not-allowed' : 'pointer', fontSize: 14, fontWeight: 800,
+          }}>{runningStep === 'purchase-and-approval' || saving ? '구매 & 품의 진행 중...' : '구매 & 품의 진행'}</button>
           {renderSoldOutDecisionPanel()}
           {renderPurchaseActionPanel()}
           {renderDiagnosticsPanel()}

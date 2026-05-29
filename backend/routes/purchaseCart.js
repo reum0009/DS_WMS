@@ -1260,6 +1260,26 @@ router.post('/jobs/:jobId/submit-approval', roleAuth(WRITE_ROLES), async (req, r
   }
 });
 
+router.get('/jobs/:jobId/approval-preview', roleAuth(WRITE_ROLES), async (req, res) => {
+  try {
+    const jobId = String(req.params.jobId || '').trim();
+    if (!jobId) return res.status(400).json({ error: '구매 작업 ID가 없습니다.' });
+
+    const { response, data } = await purchaseAutoRequest(`/api/purchase-jobs/${encodeURIComponent(jobId)}/approval-preview`, {
+      timeoutMs: 60000,
+    });
+    if (!response.ok) {
+      return res.status(response.status).json({
+        error: purchaseAutoError(data, '그룹웨어 품의 본문 미리보기를 생성하지 못했습니다.'),
+        purchaseAutoStatus: response.status,
+      });
+    }
+    res.json({ ...data, purchaseAutoHealth: await purchaseAutoHealth() });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 router.post('/images/refresh', roleAuth(WRITE_ROLES), async (req, res) => {
   try {
     await ensureSchema();
