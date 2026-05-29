@@ -4195,6 +4195,7 @@ function PurchaseCartPanel({ showMsg, currentUser }) {
   const [imagePreview, setImagePreview] = useState(null);
   const [result, setResult] = useState(null);
   const [purchaseModalOpen, setPurchaseModalOpen] = useState(false);
+  const [recipientModalOpen, setRecipientModalOpen] = useState(false);
   const [soldOutDecision, setSoldOutDecision] = useState(null);
   const [workflowLog, setWorkflowLog] = useState([]);
   const [diagnostics, setDiagnostics] = useState(null);
@@ -4329,14 +4330,7 @@ function PurchaseCartPanel({ showMsg, currentUser }) {
     }
   };
 
-  const openPurchaseWorkflow = () => {
-    if (assetRecipientErrors.length) {
-      const message = assetRecipientErrors[0];
-      setResult({ error: message });
-      appendWorkflowLog(message, 'error');
-      showMsg(message, 'error');
-      return;
-    }
+  const openAccountWorkflow = () => {
     setPurchaseModalOpen(true);
     setSoldOutDecision(null);
     setWorkflowLog([]);
@@ -4344,6 +4338,25 @@ function PurchaseCartPanel({ showMsg, currentUser }) {
     if (!automationForm.groupwareLoginId && currentUser?.username) {
       setAutomationForm(f => ({ ...f, groupwareLoginId: currentUser.username }));
     }
+  };
+
+  const openPurchaseWorkflow = () => {
+    if (assetRecipientUnits.length) {
+      setRecipientModalOpen(true);
+      return;
+    }
+    openAccountWorkflow();
+  };
+
+  const confirmAssetRecipients = () => {
+    if (assetRecipientErrors.length) {
+      const message = assetRecipientErrors[0];
+      setResult({ error: message });
+      showMsg(message, 'error');
+      return;
+    }
+    setRecipientModalOpen(false);
+    openAccountWorkflow();
   };
 
   const purchaseCheckoutPayload = () => ({
@@ -5006,35 +5019,6 @@ function PurchaseCartPanel({ showMsg, currentUser }) {
               <Field label="요청자 *">
                 <input value={form.requester} onChange={e => setForm(f => ({ ...f, requester: e.target.value }))} style={inputStyle} />
               </Field>
-              {assetRecipientUnits.length > 0 && (
-                <div style={{ marginBottom: 14 }}>
-                  <div style={{ color: '#8b949e', fontSize: 12, fontWeight: 700, marginBottom: 8 }}>지급대상 *</div>
-                  <div style={{ display: 'grid', gap: 8 }}>
-                    {assetRecipientUnits.map(unit => {
-                      const legacyRow = unit.unitIndex === 0 ? assetRecipients[String(unit.item.cartItemId)] : null;
-                      const row = assetRecipients[unit.key] || legacyRow || {};
-                      const item = unit.item;
-                      const product = item.product || {};
-                      return (
-                        <div key={unit.key} style={{ border: '1px solid #30363d', borderRadius: 6, padding: 10, background: '#0d1117' }}>
-                          <div style={{ color: '#e6edf3', fontWeight: 700, fontSize: 12, marginBottom: 8, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                            {product.productName || product.productCode || '집기비품'}
-                            {unit.quantity > 1 ? ` ${unit.unitIndex + 1}/${unit.quantity}` : ''}
-                          </div>
-                          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 8 }}>
-                            <input value={row.department || ''} onChange={e => updateAssetRecipient(unit, 'department', e.target.value)} style={{ ...inputStyle, padding: '7px 8px', fontSize: 12 }} placeholder="부서" />
-                            <input value={row.user || ''} onChange={e => updateAssetRecipient(unit, 'user', e.target.value)} style={{ ...inputStyle, padding: '7px 8px', fontSize: 12 }} placeholder="사용자" />
-                            <input value={row.purpose || ''} onChange={e => updateAssetRecipient(unit, 'purpose', e.target.value)} style={{ ...inputStyle, padding: '7px 8px', fontSize: 12 }} placeholder="용도" />
-                          </div>
-                        </div>
-                      );
-                    })}
-                  </div>
-                  {assetRecipientErrors.length > 0 && (
-                    <div style={{ color: '#f85149', fontSize: 12, lineHeight: 1.5, marginTop: 8 }}>{assetRecipientErrors[0]}</div>
-                  )}
-                </div>
-              )}
               <Field label="메모">
                 <textarea value={form.memo} onChange={e => setForm(f => ({ ...f, memo: e.target.value }))} style={{ ...inputStyle, minHeight: 86, resize: 'vertical' }} placeholder="공장/부서/대상자/용도 등" />
               </Field>
@@ -5052,6 +5036,75 @@ function PurchaseCartPanel({ showMsg, currentUser }) {
           </div>
 
         </>
+      )}
+
+      {recipientModalOpen && (
+        <Modal title="지급대상 입력" onClose={() => setRecipientModalOpen(false)} width={920}>
+          <div style={{ border: '1px solid #30363d', borderRadius: 8, overflow: 'hidden', marginBottom: 14 }}>
+            <div style={{
+              display: 'grid',
+              gridTemplateColumns: 'minmax(220px, 2fr) 64px minmax(120px, 1fr) minmax(120px, 1fr) minmax(140px, 1fr)',
+              gap: 8,
+              padding: '9px 10px',
+              background: '#1c2128',
+              borderBottom: '1px solid #30363d',
+              color: '#8b949e',
+              fontSize: 12,
+              fontWeight: 700,
+            }}>
+              <div>품목</div>
+              <div>순번</div>
+              <div>부서</div>
+              <div>사용자</div>
+              <div>용도</div>
+            </div>
+            <div style={{ maxHeight: '58vh', overflowY: 'auto' }}>
+              {assetRecipientUnits.map(unit => {
+                const legacyRow = unit.unitIndex === 0 ? assetRecipients[String(unit.item.cartItemId)] : null;
+                const row = assetRecipients[unit.key] || legacyRow || {};
+                const product = unit.item.product || {};
+                const sequence = unit.quantity > 1 ? `${unit.unitIndex + 1}/${unit.quantity}` : '1';
+                return (
+                  <div key={unit.key} style={{
+                    display: 'grid',
+                    gridTemplateColumns: 'minmax(220px, 2fr) 64px minmax(120px, 1fr) minmax(120px, 1fr) minmax(140px, 1fr)',
+                    gap: 8,
+                    alignItems: 'center',
+                    padding: '9px 10px',
+                    borderBottom: '1px solid #21262d',
+                    background: '#0d1117',
+                  }}>
+                    <div style={{ minWidth: 0 }}>
+                      <div style={{ color: '#e6edf3', fontWeight: 700, fontSize: 12, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                        {product.productName || product.productCode || '비소모품'}
+                      </div>
+                      <div style={{ color: '#8b949e', fontSize: 11, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                        {product.specification || product.productCode || ''}
+                      </div>
+                    </div>
+                    <div style={{ color: '#58a6ff', fontSize: 12, fontWeight: 800 }}>{sequence}</div>
+                    <input value={row.department || ''} onChange={e => updateAssetRecipient(unit, 'department', e.target.value)} style={{ ...inputStyle, padding: '7px 8px', fontSize: 12 }} placeholder="부서" />
+                    <input value={row.user || ''} onChange={e => updateAssetRecipient(unit, 'user', e.target.value)} style={{ ...inputStyle, padding: '7px 8px', fontSize: 12 }} placeholder="사용자" />
+                    <input value={row.purpose || ''} onChange={e => updateAssetRecipient(unit, 'purpose', e.target.value)} style={{ ...inputStyle, padding: '7px 8px', fontSize: 12 }} placeholder="용도" />
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+          {assetRecipientErrors.length > 0 && (
+            <div style={{ color: '#f85149', fontSize: 12, lineHeight: 1.5, marginBottom: 14 }}>{assetRecipientErrors[0]}</div>
+          )}
+          <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
+            <button onClick={() => setRecipientModalOpen(false)} style={{
+              background: '#21262d', border: '1px solid #30363d', color: '#c9d1d9',
+              padding: '9px 16px', borderRadius: 6, cursor: 'pointer', fontSize: 13, fontWeight: 700,
+            }}>취소</button>
+            <button onClick={confirmAssetRecipients} style={{
+              background: '#238636', border: '1px solid #2ea043', color: '#fff',
+              padding: '9px 18px', borderRadius: 6, cursor: 'pointer', fontSize: 13, fontWeight: 800,
+            }}>확인</button>
+          </div>
+        </Modal>
       )}
 
       {purchaseModalOpen && (
