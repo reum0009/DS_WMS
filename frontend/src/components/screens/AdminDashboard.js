@@ -4448,10 +4448,10 @@ function PurchaseCartPanel({ showMsg, currentUser }) {
   const openApprovalPreviewWindow = () => {
     const win = window.open('', '_blank', 'width=1180,height=900,scrollbars=yes,resizable=yes');
     if (!win) throw new Error('미리보기 창을 열 수 없습니다. 브라우저 팝업 차단을 허용하세요.');
-    win.opener = null;
     win.document.open();
     win.document.write(approvalPreviewDocument('그룹웨어 품의 본문 미리보기', '<div style="font-size:14px;color:#4b5563;">품의 본문을 생성하는 중입니다.</div>'));
     win.document.close();
+    try { win.focus(); } catch (_) {}
     return win;
   };
 
@@ -4460,6 +4460,12 @@ function PurchaseCartPanel({ showMsg, currentUser }) {
     win.document.open();
     win.document.write(approvalPreviewDocument(title, bodyHtml));
     win.document.close();
+    try {
+      win.focus();
+      setTimeout(() => {
+        try { win.focus(); } catch (_) {}
+      }, 150);
+    } catch (_) {}
   };
 
   const split = useMemo(() => {
@@ -4626,6 +4632,31 @@ function PurchaseCartPanel({ showMsg, currentUser }) {
     appendWorkflowLog('그룹웨어 품의 본문 미리보기 창을 열었습니다.', 'success');
   };
 
+  const confirmPreviewSubmit = (previewWindow) => {
+    const message = '미리보기 본문 그대로 그룹웨어 품의를 상신할까요?';
+    try {
+      if (previewWindow && !previewWindow.closed) {
+        previewWindow.focus();
+        return previewWindow.confirm(message);
+      }
+    } catch (_) {}
+    try { window.focus(); } catch (_) {}
+    return window.confirm(message);
+  };
+
+  const confirmPreviewBeforeSubmit = (previewWindow) => {
+    if (!automationForm.approvalBodyPreview) return true;
+    const confirmed = confirmPreviewSubmit(previewWindow);
+    if (!confirmed) {
+      const message = '미리보기 확인 후 그룹웨어 품의 상신을 취소했습니다.';
+      appendWorkflowLog(message);
+      showMsg(message);
+      return false;
+    }
+    appendWorkflowLog('미리보기 확인 후 그룹웨어 품의 상신 승인', 'success');
+    return true;
+  };
+
   const submitGroupwareApproval = async (jobId) => {
     appendWorkflowLog('그룹웨어 품의 상신 시작');
     const response = await purchaseCartAPI.submitApproval(jobId, {
@@ -4686,6 +4717,7 @@ function PurchaseCartPanel({ showMsg, currentUser }) {
       const nextJob = recordPurchaseStepSuccess('run-compuzone-order', '컴퓨존 주문/견적 실행', data);
       if (automationForm.approvalBodyPreview) {
         await previewApprovalBody(nextJob.job_id, previewWindow);
+        if (!confirmPreviewBeforeSubmit(previewWindow)) return;
       }
       await submitGroupwareApproval(nextJob.job_id);
       showMsg('품절 상품을 제외하고 나머지 구매와 품의를 진행했습니다');
@@ -4768,6 +4800,7 @@ function PurchaseCartPanel({ showMsg, currentUser }) {
 
       if (automationForm.approvalBodyPreview) {
         await previewApprovalBody(jobForApproval.job_id, previewWindow);
+        if (!confirmPreviewBeforeSubmit(previewWindow)) return;
       }
 
       await submitGroupwareApproval(jobForApproval.job_id);
