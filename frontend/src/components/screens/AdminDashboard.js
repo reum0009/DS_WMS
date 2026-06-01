@@ -1731,36 +1731,7 @@ const sourceBadgeColor = (source) => {
 };
 const productImageUrl = (product) => product?.source?.thumbnailUrl || product?.source?.imageUrl || '';
 const productLabel = (product) => [product?.productName, product?.specification].filter(Boolean).join(' / ');
-
-const PURCHASE_COMPANIES = [
-  {
-    value: '대승',
-    label: '대승',
-    businessNumbers: [
-      { label: 'D1공장', value: '125-81-05619' },
-      { label: 'D2공장', value: '403-85-07607' },
-      { label: 'D3공장', value: '403-85-23311' },
-    ],
-  },
-  {
-    value: '대승정밀',
-    label: '대승정밀',
-    businessNumbers: [
-      { label: 'P1공장', value: '125-81-32697' },
-      { label: 'P3공장', value: '403-85-15640' },
-      { label: 'P4공장', value: '844-85-00770' },
-      { label: 'P2공장', value: '118-85-07029' },
-    ],
-  },
-  {
-    value: '일강',
-    label: '일강',
-    businessNumbers: [
-      { label: '일강 1공장', value: '125-81-51622' },
-      { label: '일강 2공장', value: '403-85-20895' },
-    ],
-  },
-];
+const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
 const PURCHASE_DELIVERIES = [
   {
@@ -1783,9 +1754,7 @@ const PURCHASE_DELIVERIES = [
   },
 ];
 
-const purchaseCompany = (value) => PURCHASE_COMPANIES.find(c => c.value === value) || PURCHASE_COMPANIES[0];
 const purchaseDelivery = (key) => PURCHASE_DELIVERIES.find(d => d.key === key) || PURCHASE_DELIVERIES[0];
-const purchaseBusinessNumber = (company, value) => company.businessNumbers.find(item => item.value === value) || company.businessNumbers[0] || null;
 
 const SOFTWARE_EXPENSE_MARKERS = [
   'microsoft 365', 'creative cloud', 'saas', '월구독', '연구독', '구독', '클라우드', '호스팅',
@@ -4212,7 +4181,6 @@ function PurchaseCartPanel({ showMsg, currentUser }) {
     businessNumber: '403-85-15640',
     requester: currentUser?.name || '',
     memo: '',
-    allowPartial: false,
   });
   const [assetRecipients, setAssetRecipients] = useState({});
 
@@ -4361,22 +4329,21 @@ function PurchaseCartPanel({ showMsg, currentUser }) {
   };
 
   const purchaseCheckoutPayload = () => ({
-    corp: form.corp,
+    corp: selectedDelivery.defaultCorp,
     deliveryName: selectedDelivery.label,
     deliveryKeywords: selectedDelivery.keywords,
-    businessNumber: form.businessNumber,
+    businessNumber: selectedDelivery.defaultBusinessNumber,
     businessContactName: selectedDelivery.businessContactName,
     requester: form.requester,
     memo: form.memo,
-    factory: selectedFactoryLabel,
+    factory: selectedDelivery.factory,
     deliveryFactory: selectedDelivery.factory,
     assetRecipients,
-    allowPartial: form.allowPartial,
   });
 
   const createPurchaseJob = async () => {
-    if ((split.manual.length || split.blocked.length) && !form.allowPartial) {
-      const message = '컴퓨존 자동구매가 안 되는 항목이 포함되어 있습니다. 컴퓨존 상품만 먼저 진행하려면 옵션을 켜세요.';
+    if (split.manual.length || split.blocked.length) {
+      const message = '컴퓨존 자동구매가 안 되는 항목이 포함되어 있습니다. 컴퓨존 구매 작업에는 컴퓨존 구매 가능 상품만 담아주세요.';
       setResult({ error: message });
       appendWorkflowLog(message, 'error');
       showMsg(message, 'error');
@@ -4445,13 +4412,28 @@ function PurchaseCartPanel({ showMsg, currentUser }) {
 </body>
 </html>`;
 
+  const focusApprovalPreviewWindow = (win) => {
+    if (!win || win.closed) return;
+    const focusOnce = () => {
+      try {
+        const width = Math.min(1280, window.screen?.availWidth || 1280);
+        const height = Math.min(920, window.screen?.availHeight || 920);
+        win.moveTo(0, 0);
+        win.resizeTo(width, height);
+      } catch (_) {}
+      try { win.focus(); } catch (_) {}
+    };
+    focusOnce();
+    [120, 350, 800, 1400].forEach(delay => setTimeout(focusOnce, delay));
+  };
+
   const openApprovalPreviewWindow = () => {
     const win = window.open('', '_blank', 'width=1180,height=900,scrollbars=yes,resizable=yes');
     if (!win) throw new Error('미리보기 창을 열 수 없습니다. 브라우저 팝업 차단을 허용하세요.');
     win.document.open();
     win.document.write(approvalPreviewDocument('그룹웨어 품의 본문 미리보기', '<div style="font-size:14px;color:#4b5563;">품의 본문을 생성하는 중입니다.</div>'));
     win.document.close();
-    try { win.focus(); } catch (_) {}
+    focusApprovalPreviewWindow(win);
     return win;
   };
 
@@ -4460,12 +4442,7 @@ function PurchaseCartPanel({ showMsg, currentUser }) {
     win.document.open();
     win.document.write(approvalPreviewDocument(title, bodyHtml));
     win.document.close();
-    try {
-      win.focus();
-      setTimeout(() => {
-        try { win.focus(); } catch (_) {}
-      }, 150);
-    } catch (_) {}
+    focusApprovalPreviewWindow(win);
   };
 
   const split = useMemo(() => {
@@ -4540,13 +4517,8 @@ function PurchaseCartPanel({ showMsg, currentUser }) {
     }));
   };
 
-  const selectedCompany = useMemo(() => purchaseCompany(form.corp), [form.corp]);
   const selectedDelivery = useMemo(() => purchaseDelivery(form.deliveryKey), [form.deliveryKey]);
-  const selectedBusinessNumber = useMemo(
-    () => purchaseBusinessNumber(selectedCompany, form.businessNumber),
-    [selectedCompany, form.businessNumber]
-  );
-  const selectedFactoryLabel = selectedBusinessNumber?.label?.replace(/\s+/g, '') || selectedDelivery.factory;
+  const selectedFactoryLabel = selectedDelivery.factory;
   const approvalTitle = useMemo(() => {
     return `전산 ${purchaseDocumentLabel(split.compuzone)} 구매 건(${selectedFactoryLabel})`;
   }, [split.compuzone, selectedFactoryLabel]);
@@ -4558,17 +4530,6 @@ function PurchaseCartPanel({ showMsg, currentUser }) {
       deliveryKey: nextDelivery.key,
       corp: nextDelivery.defaultCorp,
       businessNumber: nextDelivery.defaultBusinessNumber,
-    }));
-  };
-
-  const changeCorp = (corp) => {
-    const company = purchaseCompany(corp);
-    setForm(f => ({
-      ...f,
-      corp: company.value,
-      businessNumber: company.businessNumbers.some(item => item.value === f.businessNumber)
-        ? f.businessNumber
-        : company.businessNumbers[0]?.value || '',
     }));
   };
 
@@ -4636,7 +4597,7 @@ function PurchaseCartPanel({ showMsg, currentUser }) {
     const message = '미리보기 본문 그대로 그룹웨어 품의를 상신할까요?';
     try {
       if (previewWindow && !previewWindow.closed) {
-        previewWindow.focus();
+        focusApprovalPreviewWindow(previewWindow);
         return previewWindow.confirm(message);
       }
     } catch (_) {}
@@ -4644,8 +4605,10 @@ function PurchaseCartPanel({ showMsg, currentUser }) {
     return window.confirm(message);
   };
 
-  const confirmPreviewBeforeSubmit = (previewWindow) => {
+  const confirmPreviewBeforeSubmit = async (previewWindow) => {
     if (!automationForm.approvalBodyPreview) return true;
+    focusApprovalPreviewWindow(previewWindow);
+    await sleep(450);
     const confirmed = confirmPreviewSubmit(previewWindow);
     if (!confirmed) {
       const message = '미리보기 확인 후 그룹웨어 품의 상신을 취소했습니다.';
@@ -4717,7 +4680,7 @@ function PurchaseCartPanel({ showMsg, currentUser }) {
       const nextJob = recordPurchaseStepSuccess('run-compuzone-order', '컴퓨존 주문/견적 실행', data);
       if (automationForm.approvalBodyPreview) {
         await previewApprovalBody(nextJob.job_id, previewWindow);
-        if (!confirmPreviewBeforeSubmit(previewWindow)) return;
+        if (!(await confirmPreviewBeforeSubmit(previewWindow))) return;
       }
       await submitGroupwareApproval(nextJob.job_id);
       showMsg('품절 상품을 제외하고 나머지 구매와 품의를 진행했습니다');
@@ -4800,7 +4763,7 @@ function PurchaseCartPanel({ showMsg, currentUser }) {
 
       if (automationForm.approvalBodyPreview) {
         await previewApprovalBody(jobForApproval.job_id, previewWindow);
-        if (!confirmPreviewBeforeSubmit(previewWindow)) return;
+        if (!(await confirmPreviewBeforeSubmit(previewWindow))) return;
       }
 
       await submitGroupwareApproval(jobForApproval.job_id);
@@ -5104,16 +5067,12 @@ function PurchaseCartPanel({ showMsg, currentUser }) {
 
               {(split.manual.length || split.blocked.length) > 0 && (
                 <div style={{ background: '#3a2e00', border: '1px solid #9e6a03', color: '#e3b341', borderRadius: 6, padding: 10, fontSize: 12, lineHeight: 1.5, marginBottom: 14 }}>
-                  컴퓨존 자동구매가 안 되는 항목이 포함되어 있습니다. 기본은 막아두고, 아래 옵션을 켜면 컴퓨존 상품만 먼저 구매 요청으로 넘깁니다.
+                  컴퓨존 자동구매가 안 되는 항목이 포함되어 있습니다. 컴퓨존 구매 작업에는 컴퓨존 구매 가능 상품만 담아주세요.
                 </div>
               )}
 
               <Field label="법인/회사 *">
-                <select value={form.corp} onChange={e => changeCorp(e.target.value)} style={inputStyle}>
-                  {PURCHASE_COMPANIES.map(company => (
-                    <option key={company.value} value={company.value}>{company.label}</option>
-                  ))}
-                </select>
+                <input value={selectedDelivery.defaultCorp} readOnly style={{ ...inputStyle, color: '#e6edf3', background: '#0d1117' }} />
               </Field>
               <Field label="배송지 *">
                 <select value={form.deliveryKey} onChange={e => changeDelivery(e.target.value)} style={inputStyle}>
@@ -5123,11 +5082,7 @@ function PurchaseCartPanel({ showMsg, currentUser }) {
                 </select>
               </Field>
               <Field label="사업장 *">
-                <select value={form.businessNumber} onChange={e => setForm(f => ({ ...f, businessNumber: e.target.value }))} style={inputStyle}>
-                  {selectedCompany.businessNumbers.map(item => (
-                    <option key={item.value} value={item.value}>{item.label}</option>
-                  ))}
-                </select>
+                <input value={`${selectedDelivery.factory} / ${selectedDelivery.defaultBusinessNumber}`} readOnly style={{ ...inputStyle, color: '#e6edf3', background: '#0d1117' }} />
               </Field>
               <Field label="품의 제목 *">
                 <input value={approvalTitle} readOnly style={{ ...inputStyle, color: '#e6edf3', background: '#0d1117' }} />
@@ -5138,10 +5093,6 @@ function PurchaseCartPanel({ showMsg, currentUser }) {
               <Field label="메모">
                 <textarea value={form.memo} onChange={e => setForm(f => ({ ...f, memo: e.target.value }))} style={{ ...inputStyle, minHeight: 86, resize: 'vertical' }} placeholder="공장/부서/대상자/용도 등" />
               </Field>
-              <label style={{ display: 'flex', alignItems: 'center', gap: 8, color: '#c9d1d9', fontSize: 13, marginBottom: 14 }}>
-                <input type="checkbox" checked={form.allowPartial} onChange={e => setForm(f => ({ ...f, allowPartial: e.target.checked }))} style={{ accentColor: '#58a6ff' }} />
-                컴퓨존 상품만 먼저 요청 생성
-              </label>
               <button onClick={openPurchaseWorkflow} disabled={saving || split.compuzone.length === 0} style={{
                 width: '100%', background: saving || split.compuzone.length === 0 ? '#30363d' : '#238636',
                 border: `1px solid ${saving || split.compuzone.length === 0 ? '#444c56' : '#2ea043'}`,
