@@ -1733,6 +1733,35 @@ const productImageUrl = (product) => product?.source?.thumbnailUrl || product?.s
 const productLabel = (product) => [product?.productName, product?.specification].filter(Boolean).join(' / ');
 const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
+const PURCHASE_COMPANIES = [
+  {
+    value: '대승',
+    label: '대승',
+    businessNumbers: [
+      { label: 'D1공장', value: '125-81-05619' },
+      { label: 'D2공장', value: '403-85-07607' },
+      { label: 'D3공장', value: '403-85-23311' },
+    ],
+  },
+  {
+    value: '대승정밀',
+    label: '대승정밀',
+    businessNumbers: [
+      { label: 'P1공장', value: '125-81-32697' },
+      { label: 'P2공장', value: '118-85-07029' },
+      { label: 'P3공장', value: '403-85-15640' },
+      { label: 'P4공장', value: '844-85-00770' },
+    ],
+  },
+  {
+    value: '일강',
+    label: '일강',
+    businessNumbers: [
+      { label: '일강 1공장', value: '125-81-51622' },
+      { label: '일강 2공장', value: '403-85-20895' },
+    ],
+  },
+];
 const PURCHASE_DELIVERIES = [
   {
     key: 'gimje-it',
@@ -1754,7 +1783,9 @@ const PURCHASE_DELIVERIES = [
   },
 ];
 
+const purchaseCompany = (value) => PURCHASE_COMPANIES.find(c => c.value === value) || PURCHASE_COMPANIES[0];
 const purchaseDelivery = (key) => PURCHASE_DELIVERIES.find(d => d.key === key) || PURCHASE_DELIVERIES[0];
+const purchaseBusinessNumber = (company, value) => company.businessNumbers.find(item => item.value === value) || company.businessNumbers[0] || null;
 
 const SOFTWARE_EXPENSE_MARKERS = [
   'microsoft 365', 'creative cloud', 'saas', '월구독', '연구독', '구독', '클라우드', '호스팅',
@@ -4329,14 +4360,14 @@ function PurchaseCartPanel({ showMsg, currentUser }) {
   };
 
   const purchaseCheckoutPayload = () => ({
-    corp: selectedDelivery.defaultCorp,
+    corp: form.corp,
     deliveryName: selectedDelivery.label,
     deliveryKeywords: selectedDelivery.keywords,
-    businessNumber: selectedDelivery.defaultBusinessNumber,
+    businessNumber: form.businessNumber,
     businessContactName: selectedDelivery.businessContactName,
     requester: form.requester,
     memo: form.memo,
-    factory: selectedDelivery.factory,
+    factory: selectedFactoryLabel,
     deliveryFactory: selectedDelivery.factory,
     assetRecipients,
   });
@@ -4518,7 +4549,12 @@ function PurchaseCartPanel({ showMsg, currentUser }) {
   };
 
   const selectedDelivery = useMemo(() => purchaseDelivery(form.deliveryKey), [form.deliveryKey]);
-  const selectedFactoryLabel = selectedDelivery.factory;
+  const selectedCompany = useMemo(() => purchaseCompany(form.corp), [form.corp]);
+  const selectedBusinessNumber = useMemo(
+    () => purchaseBusinessNumber(selectedCompany, form.businessNumber),
+    [selectedCompany, form.businessNumber]
+  );
+  const selectedFactoryLabel = selectedBusinessNumber?.label?.replace(/\s+/g, '') || selectedDelivery.factory;
   const approvalTitle = useMemo(() => {
     return `전산 ${purchaseDocumentLabel(split.compuzone)} 구매 건(${selectedFactoryLabel})`;
   }, [split.compuzone, selectedFactoryLabel]);
@@ -4530,6 +4566,17 @@ function PurchaseCartPanel({ showMsg, currentUser }) {
       deliveryKey: nextDelivery.key,
       corp: nextDelivery.defaultCorp,
       businessNumber: nextDelivery.defaultBusinessNumber,
+    }));
+  };
+
+  const changeCorp = (corp) => {
+    const company = purchaseCompany(corp);
+    setForm(f => ({
+      ...f,
+      corp: company.value,
+      businessNumber: company.businessNumbers.some(item => item.value === f.businessNumber)
+        ? f.businessNumber
+        : company.businessNumbers[0]?.value || '',
     }));
   };
 
@@ -5072,7 +5119,11 @@ function PurchaseCartPanel({ showMsg, currentUser }) {
               )}
 
               <Field label="법인/회사 *">
-                <input value={selectedDelivery.defaultCorp} readOnly style={{ ...inputStyle, color: '#e6edf3', background: '#0d1117' }} />
+                <select value={form.corp} onChange={e => changeCorp(e.target.value)} style={inputStyle}>
+                  {PURCHASE_COMPANIES.map(company => (
+                    <option key={company.value} value={company.value}>{company.label}</option>
+                  ))}
+                </select>
               </Field>
               <Field label="배송지 *">
                 <select value={form.deliveryKey} onChange={e => changeDelivery(e.target.value)} style={inputStyle}>
@@ -5082,7 +5133,11 @@ function PurchaseCartPanel({ showMsg, currentUser }) {
                 </select>
               </Field>
               <Field label="사업장 *">
-                <input value={`${selectedDelivery.factory} / ${selectedDelivery.defaultBusinessNumber}`} readOnly style={{ ...inputStyle, color: '#e6edf3', background: '#0d1117' }} />
+                <select value={form.businessNumber} onChange={e => setForm(f => ({ ...f, businessNumber: e.target.value }))} style={inputStyle}>
+                  {selectedCompany.businessNumbers.map(item => (
+                    <option key={item.value} value={item.value}>{item.label} / {item.value}</option>
+                  ))}
+                </select>
               </Field>
               <Field label="품의 제목 *">
                 <input value={approvalTitle} readOnly style={{ ...inputStyle, color: '#e6edf3', background: '#0d1117' }} />
@@ -5971,3 +6026,4 @@ function UpdatePanel({ showMsg }) {
     </div>
   );
 }
+
