@@ -1748,9 +1748,9 @@ const PURCHASE_COMPANIES = [
     label: '대승정밀',
     businessNumbers: [
       { label: 'P1공장', value: '125-81-32697' },
-      { label: 'P2공장', value: '118-85-07029' },
-      { label: 'P3공장', value: '403-85-15640' },
-      { label: 'P4공장', value: '844-85-00770' },
+      { label: 'P2공장', value: '403-85-15640' },
+      { label: 'P3공장', value: '844-85-00770' },
+      { label: 'P4공장', value: '118-85-07029' },
     ],
   },
   {
@@ -1768,7 +1768,7 @@ const PURCHASE_DELIVERIES = [
     label: '김제 전산팀',
     factory: 'P3공장',
     defaultCorp: '대승정밀',
-    defaultBusinessNumber: '403-85-15640',
+    defaultBusinessNumber: '844-85-00770',
     businessContactName: '윤기옥',
     keywords: ['김제 전산팀', '지평선산단4길 89', '010-8025-2861'],
   },
@@ -4209,7 +4209,7 @@ function PurchaseCartPanel({ showMsg, currentUser }) {
   const [form, setForm] = useState({
     corp: '대승정밀',
     deliveryKey: 'gimje-it',
-    businessNumber: '403-85-15640',
+    businessNumber: '844-85-00770',
     requester: currentUser?.name || '',
     memo: '',
   });
